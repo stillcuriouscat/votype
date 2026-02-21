@@ -1,0 +1,16 @@
+# Requirements for model testing
+
+# Qwen2-Audio dependencies
+transformers>=4.37.0
+librosa>=0.10.0
+accelerate>=0.25.0
+sentencepiece>=0.1.99
+
+# FireRedASR dependencies
+# fireredasr must be installed from GitHub
+git+https://github.com/FireRedTeam/FireRedASR.git
+
+# Common dependencies
+numpy>=1.24.0
+torch>=2.1.0
+torchaudio>=2.1.0
