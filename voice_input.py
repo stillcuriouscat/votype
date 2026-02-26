@@ -118,9 +118,30 @@ def is_recording():
     return is_process_running(PID_FILE)
 
 
+def _cleanup_daemon_files():
+    """Clean up stale daemon PID and socket files."""
+    DAEMON_PID_FILE.unlink(missing_ok=True)
+    SOCKET_PATH.unlink(missing_ok=True)
+
+
 def is_daemon_running():
     """Check whether the daemon is running."""
-    return is_process_running(DAEMON_PID_FILE)
+    if not DAEMON_PID_FILE.exists():
+        return False
+    try:
+        pid = int(DAEMON_PID_FILE.read_text().strip())
+        os.kill(pid, 0)
+        # Verify this is actually our daemon (PID may have been reused by another process)
+        cmdline_path = Path(f"/proc/{pid}/cmdline")
+        if cmdline_path.exists():
+            cmdline = cmdline_path.read_text()
+            if "voice_input" not in cmdline and "voice-input" not in cmdline:
+                _cleanup_daemon_files()
+                return False
+        return True
+    except (ProcessLookupError, ValueError):
+        _cleanup_daemon_files()
+        return False
 
 
 def is_daemon_ready():
