@@ -332,25 +332,74 @@ def is_terminal_window():
         return False
 
 
+KITTY_SOCKET_GLOB = "/tmp/kitty-socket*"
+
+
+def _get_kitty_socket():
+    """Return kitty socket path if available, else None.
+
+    Kitty appends PID to socket path (e.g. /tmp/kitty-socket-12345).
+    """
+    import glob
+    sockets = sorted(glob.glob(KITTY_SOCKET_GLOB))
+    return sockets[0] if sockets else None
+
+
+def _is_kitty_window():
+    """Check if the active window belongs to Kitty terminal.
+
+    Uses WM_CLASS (stable) instead of window title (changes with running program).
+    """
+    try:
+        wid = subprocess.run(
+            ["xdotool", "getactivewindow"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        wm_class = subprocess.run(
+            ["xprop", "-id", wid, "WM_CLASS"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip().lower()
+        return "kitty" in wm_class
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+
+
+def _send_paste_key(terminal):
+    """Send paste keystroke via xdotool (for non-Kitty windows)."""
+    if terminal:
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True)
+    else:
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], check=True)
+
+
 def type_text(text):
-    """Smart text input: uses clipboard paste for both terminal and GUI."""
+    """Smart text input: Kitty uses native send-text, others use clipboard paste."""
     if not text:
         return
 
     try:
-        # Always use clipboard method (xdotool type doesn't support CJK)
+        # Try Kitty native send-text first (works where xdotool can't)
+        kitty_socket = _get_kitty_socket()
+        if kitty_socket and _is_kitty_window():
+            try:
+                subprocess.run(
+                    ["kitty", "@", "--to", f"unix:{kitty_socket}", "send-text", text],
+                    check=True
+                )
+                print(f"[type_text] Used kitty send-text")
+                return
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass  # Fall through to clipboard method
+
+        # Clipboard paste method (for non-Kitty windows or Kitty fallback)
         old_clipboard = clipboard_get()
         clipboard_set(text)
         time.sleep(0.1)
 
-        if is_terminal_window():
-            # Terminal: ctrl+shift+v to paste
-            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"], check=True)
-            print("[type_text] Used clipboard paste (terminal: ctrl+shift+v)")
-        else:
-            # GUI: ctrl+v to paste
-            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], check=True)
-            print("[type_text] Used clipboard paste (GUI: ctrl+v)")
+        terminal = is_terminal_window()
+        _send_paste_key(terminal)
+        paste_key = "ctrl+shift+v" if terminal else "ctrl+v"
+        print(f"[type_text] Used clipboard paste (xdotool: {paste_key})")
 
         time.sleep(0.2)
         if old_clipboard:

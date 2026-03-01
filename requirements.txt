@@ -4,3 +4,5 @@ torch
 torchaudio
 sounddevice
 numpy
+transformers
+tiktoken

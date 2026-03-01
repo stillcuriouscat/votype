@@ -132,6 +132,80 @@ sudo apt install xdotool xclip
 
 The default configuration uses CUDA (`cuda:0`). If you do not have an NVIDIA GPU or encounter CUDA errors, you can modify `model_presets.py` and change `DEVICE` to `"cpu"`.
 
+### System tray icon not showing
+
+The tray icon requires `PyGObject` and `AyatanaAppIndicator3`, which are system packages:
+
+```bash
+sudo apt install python3-gi gir1.2-ayatanaappindicator3-0.1
+```
+
+The virtual environment **must** be created with `--system-site-packages` so it can access these system libraries. If you created the venv without this flag, either recreate it:
+
+```bash
+/usr/bin/python3 -m venv --system-site-packages ~/.local/share/voice-input/venv
+```
+
+Or edit `~/.local/share/voice-input/venv/pyvenv.cfg` and change:
+
+```
+include-system-site-packages = true
+```
+
+### FunASR import errors (Fun-ASR-Nano)
+
+FunASR 1.3.x has a known bug where `fun_asr_nano/model.py` uses implicit relative imports that fail in standard virtual environments. Symptoms:
+
+- `cannot access local variable 'AutoTokenizer'` -- missing `transformers` package
+- `cannot access local variable 'get_tokenizer'` -- missing `tiktoken` package
+- `FunASRNano is not registered` -- broken imports in FunASR source
+
+**Fix missing packages:**
+
+```bash
+~/.local/share/voice-input/venv/bin/pip install transformers tiktoken
+```
+
+**Fix FunASR relative imports** (required for Fun-ASR-Nano model):
+
+Edit `~/.local/share/voice-input/venv/lib/python3.*/site-packages/funasr/models/fun_asr_nano/model.py`, change:
+
+```python
+# Before (broken)
+from ctc import CTC
+from tools.utils import forced_align
+
+# After (fixed)
+from .ctc import CTC
+from .tools.utils import forced_align
+```
+
+### Transcription fails with error "0"
+
+This is a FunASR bug where the VAD post-processing code assumes timestamps are `[start, end]` lists, but Fun-ASR-Nano returns dict format (`{"start_time": ..., "end_time": ...}`).
+
+**Fix:** Edit `~/.local/share/voice-input/venv/lib/python3.*/site-packages/funasr/auto/auto_model.py`, find the `inference_with_vad` method around line 557, and replace:
+
+```python
+for t in restored_data[j][k]:
+    t[0] += vadsegments[j][0]
+    t[1] += vadsegments[j][0]
+```
+
+With:
+
+```python
+for t in restored_data[j][k]:
+    if isinstance(t, dict):
+        if "start_time" in t:
+            t["start_time"] += vadsegments[j][0]
+        if "end_time" in t:
+            t["end_time"] += vadsegments[j][0]
+    else:
+        t[0] += vadsegments[j][0]
+        t[1] += vadsegments[j][0]
+```
+
 ## Development
 
 ### Deploying Changes
