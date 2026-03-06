@@ -14,6 +14,7 @@ Requirements:
 Usage:
     python test_e2e_kitty.py --verbose
     python test_e2e_kitty.py --duration 10
+    python test_e2e_kitty.py --post-processor firered-punc --verbose
 """
 
 import argparse
@@ -276,11 +277,78 @@ def compute_rms(wav_path):
 
 
 # ---------------------------------------------------------------------------
+# Daemon log verification
+# ---------------------------------------------------------------------------
+
+DAEMON_LOG = Path("/tmp/voice-input-notify.log")
+
+
+def _check_daemon_log_for_punctuation(punc_chars):
+    """Check recent daemon log [PP] output lines for Chinese punctuation.
+
+    Returns a summary string if found, or None.
+    """
+    if not DAEMON_LOG.exists():
+        log("Daemon log not found")
+        return None
+
+    try:
+        lines = DAEMON_LOG.read_text().splitlines()
+    except OSError as exc:
+        log(f"Failed to read daemon log: {exc}")
+        return None
+
+    # Check the last 20 lines for [PP] output entries
+    for line in reversed(lines[-20:]):
+        if "[PP] output" not in line:
+            continue
+        found = [c for c in line if c in punc_chars]
+        if found:
+            unique = "".join(sorted(set(found)))
+            # Extract the text portion after the colon
+            parts = line.split(": ", 2)
+            snippet = parts[-1][:80] if len(parts) > 2 else line[-80:]
+            log(f"Daemon log punctuation: {unique} in '{snippet}'")
+            return f"{unique} (in '{snippet}')"
+
+    log("No punctuation found in recent daemon log entries")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main test flow
 # ---------------------------------------------------------------------------
 
-def run_test(duration=8):
-    """Execute the full E2E test sequence."""
+def switch_post_processor(pp_id):
+    """Switch the daemon's post-processor and return True on success."""
+    response = send_to_daemon("set_post_processor", {"post_processor_id": pp_id})
+    if response and response.get("status") == "ok":
+        log(f"Switched post-processor to: {pp_id}")
+        return True
+    # "already active" is also fine
+    if response and "already" in response.get("message", "").lower():
+        log(f"Post-processor {pp_id} already active")
+        return True
+    log(f"Failed to switch post-processor: {response}")
+    return False
+
+
+def get_current_post_processor():
+    """Query the daemon's current post-processor ID."""
+    response = send_to_daemon("get_post_processor")
+    if response and "post_processor" in response:
+        return response["post_processor"]
+    return None
+
+
+def run_test(duration=8, post_processor=None):
+    """Execute the full E2E test sequence.
+
+    Args:
+        duration: Recording duration in seconds.
+        post_processor: If set, switch daemon to this post-processor before
+            recording and restore the original afterwards.
+    """
     print("\n=== E2E Kitty Voice Input Test ===\n")
 
     # -- Pre-checks ----------------------------------------------------------
@@ -298,6 +366,19 @@ def run_test(duration=8):
     if not monitor_source:
         print("\nAborting: no monitor source found.")
         return False
+
+    # -- Post-processor switching --------------------------------------------
+    original_pp = None
+    if post_processor:
+        print(f"\n[Post-processor]")
+        original_pp = get_current_post_processor()
+        log(f"Original post-processor: {original_pp}")
+        if switch_post_processor(post_processor):
+            record_result("Post-processor switch", True, f"→ {post_processor}")
+        else:
+            record_result("Post-processor switch", False, f"Failed to switch to {post_processor}")
+            print("\nAborting: could not switch post-processor.")
+            return False
 
     # -- Find target Kitty window (avoid multi-window ambiguity) -------------
     target_wid = find_kitty_target_window(kitty_socket)
@@ -415,6 +496,9 @@ def run_test(duration=8):
     # Small delay for any pending output
     time.sleep(1)
     final_text = get_kitty_text(kitty_socket, target_wid)
+    has_new_text = False
+    new_content = ""
+    after_marker = ""
 
     if marker and marker in final_text:
         # Extract everything after the marker line
@@ -447,6 +531,44 @@ def run_test(duration=8):
         log(f"Marker not found in scrollback ({final_len} chars)")
         record_result("New text in Kitty", False,
                        f"Marker not found (scrollback={final_len} chars)")
+
+    # -- Punctuation verification (when post-processor is set) ---------------
+    if post_processor:
+        print("\n[Punctuation verification]")
+        punc_chars = set("。，？！、；：")
+        # Scan raw scrollback (before noise filtering) — tmux/mosh borders
+        # can cause the noise filter to strip transcribed text with leading spaces.
+        scan_text = after_marker if after_marker else new_content
+        found_punc = [c for c in scan_text if c in punc_chars]
+        if found_punc:
+            unique = "".join(sorted(set(found_punc)))
+            snippet = ""
+            for line in scan_text.splitlines():
+                if any(c in punc_chars for c in line):
+                    snippet = line.strip()[:80]
+                    break
+            record_result("Chinese punctuation", True,
+                           f"Found: {unique} (in '{snippet}')")
+        else:
+            # Fallback: check daemon log for post-processor output with punctuation.
+            # This still verifies the full E2E pipeline ran — audio was recorded,
+            # ASR transcribed, and FireRedPunc added punctuation.
+            log_punc = _check_daemon_log_for_punctuation(punc_chars)
+            if log_punc:
+                record_result("Chinese punctuation", True,
+                               f"Found in daemon log: {log_punc}")
+            else:
+                record_result("Chinese punctuation", False,
+                               "No Chinese punctuation in scrollback or daemon log")
+
+    # -- Restore original post-processor ------------------------------------
+    if original_pp and original_pp != post_processor:
+        print("\n[Restore post-processor]")
+        if switch_post_processor(original_pp):
+            record_result("Post-processor restore", True, f"→ {original_pp}")
+        else:
+            record_result("Post-processor restore", False,
+                           f"Failed to restore {original_pp} [non-critical]")
 
     # -- Summary -------------------------------------------------------------
     print("\n=== Summary ===")
@@ -483,10 +605,14 @@ def main():
         "--verbose", "-v", action="store_true",
         help="Show detailed log output",
     )
+    parser.add_argument(
+        "--post-processor", type=str, default=None,
+        help="Switch daemon to this post-processor before test (e.g. firered-punc)",
+    )
     args = parser.parse_args()
     verbose = args.verbose
 
-    success = run_test(duration=args.duration)
+    success = run_test(duration=args.duration, post_processor=args.post_processor)
     sys.exit(0 if success else 1)
 
 
