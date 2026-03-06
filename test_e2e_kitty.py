@@ -127,17 +127,56 @@ def find_kitty_socket():
     return None
 
 
-def get_kitty_text(kitty_socket):
-    """Capture current Kitty scrollback text.
+def find_kitty_target_window(kitty_socket):
+    """Find a suitable Kitty window ID to use for testing.
 
-    Returns the captured text string, or empty string on failure.
+    Prefers a plain shell window (not Claude Code). Falls back to any window.
+    Returns the window ID as int, or None.
     """
     try:
         result = subprocess.run(
-            ["kitty", "@", "--to", f"unix:{kitty_socket}",
-             "get-text", "--extent", "all"],
+            ["kitty", "@", "--to", f"unix:{kitty_socket}", "ls"],
             capture_output=True, text=True, timeout=10,
         )
+        data = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+        log(f"kitty ls failed: {exc}")
+        return None
+
+    all_windows = []
+    for os_win in data:
+        for tab in os_win.get("tabs", []):
+            for win in tab.get("windows", []):
+                all_windows.append(win)
+
+    # Prefer a shell window (not running Claude Code)
+    for win in all_windows:
+        title = win.get("title", "")
+        if "Claude Code" not in title and "claude" not in title.lower():
+            wid = win["id"]
+            log(f"Target window: id={wid} title={title[:60]}")
+            return wid
+
+    # Fallback: use the first window
+    if all_windows:
+        wid = all_windows[0]["id"]
+        log(f"Target window (fallback): id={wid}")
+        return wid
+
+    return None
+
+
+def get_kitty_text(kitty_socket, window_id=None):
+    """Capture current Kitty scrollback text from a specific window.
+
+    Returns the captured text string, or empty string on failure.
+    """
+    cmd = ["kitty", "@", "--to", f"unix:{kitty_socket}",
+           "get-text", "--extent", "all"]
+    if window_id is not None:
+        cmd.extend(["--match", f"id:{window_id}"])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         return result.stdout
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         log(f"kitty get-text failed: {exc}")
@@ -260,12 +299,40 @@ def run_test(duration=8):
         print("\nAborting: no monitor source found.")
         return False
 
-    # -- Baseline capture ----------------------------------------------------
+    # -- Find target Kitty window (avoid multi-window ambiguity) -------------
+    target_wid = find_kitty_target_window(kitty_socket)
+    if target_wid is None:
+        print("\nAborting: no Kitty window found.")
+        return False
+    print(f"  Target Kitty window: id={target_wid}")
+
+    # Focus the target window so voice-input's send-text goes there too
+    try:
+        subprocess.run(
+            ["kitty", "@", "--to", f"unix:{kitty_socket}",
+             "focus-window", "--match", f"id:{target_wid}"],
+            timeout=5, capture_output=True,
+        )
+        log(f"Focused window id={target_wid}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        log(f"WARNING: focus-window failed: {exc}")
+
+    # -- Inject marker into Kitty scrollback ---------------------------------
     print("\n[Baseline]")
-    baseline = get_kitty_text(kitty_socket)
-    baseline_len = len(baseline)
-    log(f"Baseline length: {baseline_len} chars")
-    print(f"  Captured baseline ({baseline_len} chars)")
+    import uuid
+    marker = f"__E2E_MARKER_{uuid.uuid4().hex[:12]}__"
+    match_arg = ["--match", f"id:{target_wid}"]
+    try:
+        subprocess.run(
+            ["kitty", "@", "--to", f"unix:{kitty_socket}",
+             "send-text"] + match_arg + [f"\n{marker}\n"],
+            timeout=5, check=True, capture_output=True,
+        )
+        log(f"Injected marker: {marker}")
+        print(f"  Injected marker into Kitty scrollback")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"  WARNING: Failed to inject marker: {exc}")
+        marker = None
 
     # -- Start monitor -------------------------------------------------------
     print("\n[Recording]")
@@ -346,18 +413,40 @@ def run_test(duration=8):
     # -- Check Kitty scrollback for new content ------------------------------
     print("\n[Output verification]")
     # Small delay for any pending output
-    time.sleep(0.5)
-    final_text = get_kitty_text(kitty_socket)
-    final_len = len(final_text)
-    new_content = final_text[baseline_len:].strip() if final_len > baseline_len else ""
-    has_new_text = len(new_content) > 0
+    time.sleep(1)
+    final_text = get_kitty_text(kitty_socket, target_wid)
 
-    if has_new_text:
-        preview = new_content[:120].replace("\n", " ")
-        record_result("New text in Kitty", True, f"'{preview}'")
+    if marker and marker in final_text:
+        # Extract everything after the marker line
+        after_marker = final_text.split(marker, 1)[1]
+        # Filter out test script noise (shell prompts, known commands)
+        noise_prefixes = ("$", "dev@", "Recording", "Transcribed:", "voice-input",
+                          "[type_text]", "[PASS]", "[FAIL]", "===", "  ")
+        content_lines = []
+        for line in after_marker.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if any(stripped.startswith(p) for p in noise_prefixes):
+                continue
+            content_lines.append(stripped)
+        new_content = " ".join(content_lines).strip()
+        has_new_text = len(new_content) > 0
+
+        if has_new_text:
+            preview = new_content[:120]
+            record_result("New text in Kitty", True, f"'{preview}'")
+        else:
+            log(f"After marker ({len(after_marker)} chars), all lines filtered as noise")
+            record_result("New text in Kitty", False,
+                           "No transcription text found after marker (only noise)")
     else:
+        # Fallback: marker not found (buffer overflow or injection failed)
+        # Check if final text ends with something that looks like transcription
+        final_len = len(final_text)
+        log(f"Marker not found in scrollback ({final_len} chars)")
         record_result("New text in Kitty", False,
-                       f"No new content (baseline={baseline_len}, final={final_len})")
+                       f"Marker not found (scrollback={final_len} chars)")
 
     # -- Summary -------------------------------------------------------------
     print("\n=== Summary ===")

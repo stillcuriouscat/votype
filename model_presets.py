@@ -56,7 +56,7 @@ MODEL_PRESETS = {
 }
 
 # Default model
-DEFAULT_MODEL = "fun-asr-nano"
+DEFAULT_MODEL = "firered-asr"
 
 # Device configuration (prefer CUDA)
 DEVICE = "cuda:0"

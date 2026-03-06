@@ -11,7 +11,9 @@ Usage:
     voice-input kill     # Stop background service
     voice-input status   # Show current status and model
     voice-input models   # List available models
-    voice-input model <name>  # Switch model (fun-asr-nano/paraformer/sensevoice/qwen2-audio/firered-asr)
+    voice-input model <name>  # Switch model (fun-asr-nano/paraformer/sensevoice/firered-asr)
+    voice-input post-processors    # List available post-processors
+    voice-input post-processor <id>  # Switch post-processor (none/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
 """
 
 import sys
@@ -27,6 +29,8 @@ from pathlib import Path
 
 # Import model configs
 from model_configs import MODEL_PRESETS, DEFAULT_MODEL, DEVICE, HOTWORDS, ModelLoader, ModelInference
+from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
+from post_processor_configs import PostProcessorLoader, PostProcessorInference
 
 # AppIndicator (system tray icon)
 try:
@@ -46,7 +50,8 @@ logging.getLogger("jieba").setLevel(logging.WARNING)
 # Configuration
 CONFIG_DIR = Path.home() / ".config" / "voice-input"
 PID_FILE = CONFIG_DIR / "recording.pid"
-AUDIO_FILE = CONFIG_DIR / "recording.wav"
+AUDIO_FILE = CONFIG_DIR / "recording.wav"  # Legacy, kept for compatibility
+AUDIO_PATH_FILE = CONFIG_DIR / "recording_path.txt"  # Stores current recording file path
 DAEMON_PID_FILE = CONFIG_DIR / "daemon.pid"
 SOCKET_PATH = CONFIG_DIR / "daemon.sock"
 
@@ -56,11 +61,23 @@ CHANNELS = 1
 
 # Current model state file
 MODEL_STATE_FILE = CONFIG_DIR / "current_model.txt"
+POST_PROCESSOR_STATE_FILE = CONFIG_DIR / "current_post_processor.txt"
 
 
 def ensure_config_dir():
     """Ensure config directory exists."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cleanup_old_recordings(max_age_hours=2):
+    """Delete recording WAV files older than max_age_hours."""
+    cutoff = time.time() - max_age_hours * 3600
+    for f in CONFIG_DIR.glob("recording_*.wav"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def get_current_model():
@@ -75,6 +92,17 @@ def set_current_model(model_id):
 
 
 NOTIFY_LOG_FILE = Path("/tmp/voice-input-notify.log")
+
+
+def _log(tag, message):
+    """Write a structured log line to the notify log file."""
+    try:
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(NOTIFY_LOG_FILE, "a") as f:
+            f.write(f"[{timestamp}] [{tag}] {message}\n")
+    except Exception:
+        pass
 
 
 def notify(title, message, urgency="normal"):
@@ -187,7 +215,8 @@ def send_to_daemon(command, data=None, timeout=60):
 
 
 def start_recording():
-    """Start recording."""
+    """Start recording with a timestamped filename."""
+    from datetime import datetime
     ensure_config_dir()
 
     if is_recording():
@@ -195,7 +224,10 @@ def start_recording():
         notify("⚠️ Voice Input", "Abnormal state: already recording\nPress the hotkey again to stop recording", "critical")
         return
 
-    AUDIO_FILE.unlink(missing_ok=True)
+    # Generate timestamped filename for this recording
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    audio_file = CONFIG_DIR / f"recording_{ts}.wav"
+    AUDIO_PATH_FILE.write_text(str(audio_file))
 
     # Notify the daemon to update icon status
     if is_daemon_running():
@@ -211,7 +243,7 @@ def start_recording():
                 "-r", str(SAMPLE_RATE),
                 "-c", str(CHANNELS),
                 "-t", "wav",
-                str(AUDIO_FILE)
+                str(audio_file)
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -220,27 +252,28 @@ def start_recording():
 
         pid = proc.pid
         PID_FILE.write_text(str(pid))
-        print(f"Recording started (PID: {pid})")
+        print(f"Recording started (PID: {pid}, file: {audio_file.name})")
     except (FileNotFoundError, OSError) as e:
+        AUDIO_PATH_FILE.unlink(missing_ok=True)
         if is_daemon_running():
             send_to_daemon("set_idle")
         notify("❌ Voice Input", f"Failed to start recording: {e}", "critical")
 
 
 def stop_recording():
-    """Stop recording and transcribe."""
+    """Stop recording and transcribe. Recording files are kept for 2 hours."""
     ensure_config_dir()
-    
+
     if not is_recording():
         # Abnormal: toggle should have called start_recording, should not reach here
         notify("⚠️ Voice Input", "Abnormal state: no recording in progress", "critical")
         return
-    
+
     # Notify the daemon to update icon status (show processing)
     daemon_running = is_daemon_running()
     if daemon_running:
         send_to_daemon("recording_stop")
-    
+
     # Stop recording
     try:
         pid = int(PID_FILE.read_text().strip())
@@ -248,18 +281,29 @@ def stop_recording():
         time.sleep(0.3)
     except (ProcessLookupError, ValueError):
         pass
-    
+
     PID_FILE.unlink(missing_ok=True)
-    
-    if not AUDIO_FILE.exists():
+
+    # Determine the audio file path (timestamped or legacy fallback)
+    audio_file = None
+    if AUDIO_PATH_FILE.exists():
+        raw = AUDIO_PATH_FILE.read_text().strip()
+        AUDIO_PATH_FILE.unlink(missing_ok=True)
+        if raw:
+            audio_file = Path(raw)
+    if audio_file is None or not audio_file.exists():
+        # Fallback to legacy path
+        audio_file = AUDIO_FILE
+
+    if not audio_file.exists():
         if daemon_running:
             send_to_daemon("set_idle")
         notify("❌ Voice Input", "Recording file not found", "critical")
         return
-    
+
     # If the daemon is running, use it for transcription
     if daemon_running:
-        response = send_to_daemon("transcribe", str(AUDIO_FILE))
+        response = send_to_daemon("transcribe", str(audio_file))
         # The daemon automatically sets idle status after transcription completes
         if response and "text" in response:
             text = response["text"]
@@ -269,11 +313,13 @@ def stop_recording():
         else:
             error = response.get("error", "Unknown error") if response else "Daemon not responding"
             notify("❌ Voice Input", f"Transcription failed: {error}", "critical")
+            # On failure, the current recording is preserved for recovery
     else:
         # No daemon is an abnormal situation (normally toggle starts the daemon first)
         notify("❌ Voice Input", "Service error\nRun voice-input daemon to start\nor check /tmp/voice-input-daemon.log", "critical")
-    
-    AUDIO_FILE.unlink(missing_ok=True)
+
+    # Always clean up old recordings (>2h), regardless of transcription result
+    _cleanup_old_recordings()
 
 
 def transcribe_audio_direct(audio_path):
@@ -497,6 +543,9 @@ class ASRDaemon:
         self.running = False
         self.indicator = None
         self.gtk_thread = None
+        self.post_processor_model = None
+        self.current_post_processor_id = DEFAULT_POST_PROCESSOR
+        self.post_processor_framework = None
     
     def setup_indicator(self):
         """Set up the system tray icon."""
@@ -556,11 +605,26 @@ class ASRDaemon:
             result = show_settings_dialog(
                 parent=None,
                 model_presets=MODEL_PRESETS,
-                current_model_id=self.current_model_id
+                current_model_id=self.current_model_id,
+                post_processor_presets=POST_PROCESSOR_PRESETS,
+                current_post_processor_id=self.current_post_processor_id,
             )
-            
-            # Handle model switching
-            if result and result.get("model_changed"):
+
+            if not result:
+                return
+
+            # Handle post-processor switching (no restart needed)
+            if result.get("pp_changed"):
+                new_pp_id = result.get("new_post_processor")
+                if new_pp_id and new_pp_id != self.current_post_processor_id:
+                    try:
+                        self.load_post_processor(new_pp_id)
+                        notify("✅ Voice Input", f"Post-processor: {POST_PROCESSOR_PRESETS[new_pp_id]['name']}")
+                    except Exception as e:
+                        notify("❌ Voice Input", f"Failed to switch post-processor: {e}", urgency="critical")
+
+            # Handle model switching (requires daemon restart)
+            if result.get("model_changed"):
                 new_model_id = result.get("new_model")
                 if new_model_id and new_model_id != self.current_model_id:
                     self._switch_model(new_model_id)
@@ -582,7 +646,8 @@ class ASRDaemon:
         
         # Start the new daemon process (in background), then exit the current process
         # Note: must start before exiting, otherwise threads will terminate with the process
-        cmd = f'nohup "{venv_python}" "{script_path}" _daemon --model {new_model_id} > /tmp/voice-input-daemon.log 2>&1 &'
+        pp_arg = f' --post-processor {self.current_post_processor_id}' if self.current_post_processor_id != "none" else ''
+        cmd = f'nohup "{venv_python}" "{script_path}" _daemon --model {new_model_id}{pp_arg} > /tmp/voice-input-daemon.log 2>&1 &'
         subprocess.run(["bash", "-c", cmd])
         
         # Delay briefly before exiting current process, giving the new process time to start
@@ -657,6 +722,49 @@ class ASRDaemon:
             notify("❌ Voice Input", error_msg, urgency="critical")
             raise RuntimeError(error_msg)
 
+    def load_post_processor(self, preset_id=None):
+        """Load a post-processor model."""
+        if preset_id is None:
+            preset_id = self.current_post_processor_id
+
+        if preset_id not in POST_PROCESSOR_PRESETS:
+            raise RuntimeError(f"Unknown post-processor: {preset_id}")
+
+        preset = POST_PROCESSOR_PRESETS[preset_id]
+
+        print(f"\n{'='*60}")
+        print(f"Loading post-processor: {preset['name']}")
+        print(f"{'='*60}")
+
+        try:
+            self.post_processor_model = PostProcessorLoader.load_post_processor(preset_id)
+            self.current_post_processor_id = preset_id
+            self.post_processor_framework = preset["framework"]
+            _log("PP-LOAD", f"loaded: {preset['name']} ({preset_id})")
+            print(f"  Post-processor ready: {preset['name']}")
+            print(f"{'='*60}\n")
+        except Exception as e:
+            error_msg = f"Post-processor loading failed: {e}"
+            _log("PP-LOAD", f"FAILED: {error_msg}")
+            print(f"  {error_msg}")
+            # Fall back to regex-only
+            self.post_processor_model = None
+            self.current_post_processor_id = "none"
+            self.post_processor_framework = "regex"
+            print("  Falling back to regex-only mode")
+
+    def _post_process(self, text):
+        """Apply post-processing to transcribed text."""
+        import time
+        _log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
+        t0 = time.time()
+        result = PostProcessorInference.process(
+            text, self.post_processor_model, self.current_post_processor_id
+        )
+        elapsed = time.time() - t0
+        _log("PP", f"output ({elapsed:.2f}s): {result[:120]}")
+        return result
+
     def transcribe(self, audio_path):
         """Transcribe audio (with hotword support)"""
         # Check if current model is available
@@ -681,6 +789,11 @@ class ASRDaemon:
         """Handle transcription request"""
         self.set_status("processing")
         response = self.transcribe(msg.get("data"))
+        if response and "text" in response and response["text"]:
+            _log("ASR", f"raw: {response['text'][:120]}")
+            response["text"] = self._post_process(response["text"])
+        elif response and "error" in response:
+            _log("ASR", f"error: {response['error']}")
         self.set_status("idle")
         return response
 
@@ -726,6 +839,35 @@ class ASRDaemon:
                     },
                     "current": self.current_model_id,
                 }
+            elif command == "get_post_processor":
+                preset = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {})
+                response = {
+                    "post_processor": self.current_post_processor_id,
+                    "name": preset.get("name", "Unknown"),
+                    "description": preset.get("description", ""),
+                }
+            elif command == "list_post_processors":
+                response = {
+                    "post_processors": {
+                        pid: {"name": p["name"], "description": p["description"]}
+                        for pid, p in POST_PROCESSOR_PRESETS.items()
+                    },
+                    "current": self.current_post_processor_id,
+                }
+            elif command == "set_post_processor":
+                new_pp_id = (msg.get("data") or {}).get("post_processor_id")
+                if not new_pp_id or new_pp_id not in POST_PROCESSOR_PRESETS:
+                    response = {"error": f"Unknown post-processor: {new_pp_id}"}
+                elif new_pp_id == self.current_post_processor_id:
+                    response = {"status": "ok", "message": "Already using this post-processor"}
+                else:
+                    try:
+                        self.load_post_processor(new_pp_id)
+                        preset = POST_PROCESSOR_PRESETS[new_pp_id]
+                        notify("✅ Voice Input", f"Post-processor: {preset['name']}")
+                        response = {"status": "ok", "post_processor": new_pp_id, "name": preset["name"]}
+                    except Exception as e:
+                        response = {"error": f"Failed to switch post-processor: {e}"}
             elif command in status_commands:
                 self.set_status(status_commands[command])
                 response = {"status": "ok"}
@@ -783,8 +925,16 @@ class ASRDaemon:
             DAEMON_PID_FILE.unlink(missing_ok=True)
             sys.exit(1)
 
+        # Load post-processor (non-fatal: falls back to regex-only)
+        try:
+            self.load_post_processor()
+        except Exception as e:
+            print(f"Post-processor loading failed, using regex-only: {e}")
+
         print(f"Daemon started (PID: {os.getpid()})")
         print(f"Model ready: {MODEL_PRESETS[self.current_model_id]['name']}")
+        pp_name = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {}).get('name', 'None')
+        print(f"Post-processor: {pp_name}")
         print("Use 'voice-input toggle' to start/stop recording.")
         
         self.running = True
@@ -850,11 +1000,57 @@ def show_status():
             print(f"  {response.get('description', '')}")
         else:
             print("Daemon: Not responsive")
+        pp_response = send_to_daemon("get_post_processor")
+        if pp_response and "post_processor" in pp_response:
+            print(f"Post-processor: {pp_response.get('name', 'Unknown')} ({pp_response.get('post_processor')})")
     else:
         # Show current model from config file
         model_id = get_current_model()
         preset = MODEL_PRESETS.get(model_id, {})
         print(f"Configured Model: {preset.get('name', 'Unknown')} ({model_id})")
+
+
+def set_post_processor():
+    """Set post-processor via CLI"""
+    if len(sys.argv) < 3:
+        print("Usage: voice-input post-processor <id>")
+        print(f"Available: {', '.join(POST_PROCESSOR_PRESETS.keys())}")
+        sys.exit(1)
+
+    pp_id = sys.argv[2].lower()
+    if pp_id not in POST_PROCESSOR_PRESETS:
+        print(f"Unknown post-processor: {pp_id}")
+        print(f"Available: {', '.join(POST_PROCESSOR_PRESETS.keys())}")
+        sys.exit(1)
+
+    if not is_daemon_running():
+        print("Daemon is not running")
+        sys.exit(1)
+
+    response = send_to_daemon("set_post_processor", {"post_processor_id": pp_id})
+    if response and response.get("status") == "ok":
+        name = response.get("name", pp_id)
+        msg = response.get("message", f"Switched to: {name}")
+        print(msg)
+    elif response and "error" in response:
+        print(f"Error: {response['error']}")
+    else:
+        print("Daemon not responsive")
+
+
+def list_post_processors():
+    """List available post-processors"""
+    print("Available post-processors:")
+    print("-" * 50)
+
+    response = send_to_daemon("list_post_processors") if is_daemon_running() else None
+    current = response.get("current") if response else None
+
+    for pp_id, preset in POST_PROCESSOR_PRESETS.items():
+        marker = "→" if pp_id == current else " "
+        print(f"  {marker} {pp_id}")
+        print(f"      {preset['name']}: {preset['description']}")
+    print()
 
 
 def list_models():
@@ -871,25 +1067,30 @@ def list_models():
         print()
 
 
-def run_daemon(model_id=None):
+def run_daemon(model_id=None, post_processor_id=None):
     """Run the daemon (internal command)"""
     daemon = ASRDaemon(model_id=model_id)
+    if post_processor_id:
+        daemon.current_post_processor_id = post_processor_id
     daemon.run()
 
 
-def start_daemon_with_model(model_id=None):
-    """Start the daemon (supports specifying a model)"""
+def start_daemon_with_model(model_id=None, post_processor_id=None):
+    """Start the daemon (supports specifying a model and post-processor)"""
     if is_daemon_running():
         print("Daemon is already running")
         return
 
     venv_python, script_path = get_daemon_paths()
 
-    # Build command, add --model argument if a model is specified
+    # Build command with optional --model and --post-processor
+    cmd_parts = [f'nohup "{venv_python}" "{script_path}" _daemon']
     if model_id:
-        cmd = f'nohup "{venv_python}" "{script_path}" _daemon --model {model_id} > /tmp/voice-input-daemon.log 2>&1 &'
-    else:
-        cmd = f'nohup "{venv_python}" "{script_path}" _daemon > /tmp/voice-input-daemon.log 2>&1 &'
+        cmd_parts.append(f'--model {model_id}')
+    if post_processor_id:
+        cmd_parts.append(f'--post-processor {post_processor_id}')
+    cmd_parts.append('> /tmp/voice-input-daemon.log 2>&1 &')
+    cmd = ' '.join(cmd_parts)
 
     subprocess.run(["bash", "-c", cmd])
 
@@ -919,13 +1120,16 @@ def main():
         "kill": stop_daemon,
         "status": show_status,
         "models": list_models,
+        "post-processors": list_post_processors,
+        "post-processor": set_post_processor,
     }
 
     if len(sys.argv) < 2:
         print(__doc__)
-        print("\nCommands: start, stop, toggle, daemon, kill, status, models")
+        print("\nCommands: start, stop, toggle, daemon, kill, status, models, post-processor, post-processors")
         print("\nOptions for daemon:")
-        print("  --model <id>    Specify model to load (fun-asr-nano, paraformer, sensevoice)")
+        print("  --model <id>           Specify model to load")
+        print("  --post-processor <id>  Specify post-processor")
         sys.exit(1)
 
     command = sys.argv[1].lower()
@@ -936,8 +1140,10 @@ def main():
         parser = argparse.ArgumentParser(prog=f'voice-input {command}')
         parser.add_argument('--model', '-m', choices=list(MODEL_PRESETS.keys()),
                             help='Model to load on startup')
+        parser.add_argument('--post-processor', '-p', choices=list(POST_PROCESSOR_PRESETS.keys()),
+                            default=None, help='Post-processor to use')
         args = parser.parse_args(sys.argv[2:])
-        daemon_handlers[command](args.model)
+        daemon_handlers[command](args.model, getattr(args, 'post_processor', None))
         return
 
     handler = simple_commands.get(command)

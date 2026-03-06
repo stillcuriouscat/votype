@@ -12,6 +12,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
+
 # GTK imports
 try:
     import gi
@@ -65,7 +67,8 @@ def get_recent_logs(lines=100):
 class SettingsDialog(Gtk.Dialog):
     """Voice input settings dialog."""
 
-    def __init__(self, parent=None, model_presets=None, current_model_id=None):
+    def __init__(self, parent=None, model_presets=None, current_model_id=None,
+                 post_processor_presets=None, current_post_processor_id=None):
         """
         Initialize the settings dialog.
 
@@ -73,6 +76,8 @@ class SettingsDialog(Gtk.Dialog):
             parent: Parent window
             model_presets: Available model presets {model_id: {"name": ..., "description": ...}}
             current_model_id: Currently selected model ID
+            post_processor_presets: Available post-processor presets
+            current_post_processor_id: Currently selected post-processor ID
         """
         super().__init__(
             title="Voice Input Settings",
@@ -86,6 +91,10 @@ class SettingsDialog(Gtk.Dialog):
         self.model_presets = model_presets or {}
         self.current_model_id = current_model_id
         self.selected_model_id = current_model_id
+
+        self.post_processor_presets = post_processor_presets or POST_PROCESSOR_PRESETS
+        self.current_post_processor_id = current_post_processor_id or DEFAULT_POST_PROCESSOR
+        self.selected_post_processor_id = self.current_post_processor_id
 
         # Add buttons
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
@@ -102,11 +111,15 @@ class SettingsDialog(Gtk.Dialog):
         model_page = self._create_model_page()
         notebook.append_page(model_page, Gtk.Label(label="Model"))
 
-        # Tab 2: Hotword configuration
+        # Tab 2: Post-Processor settings
+        pp_page = self._create_post_processor_page()
+        notebook.append_page(pp_page, Gtk.Label(label="Post-Processor"))
+
+        # Tab 3: Hotword configuration
         hotwords_page = self._create_hotwords_page()
         notebook.append_page(hotwords_page, Gtk.Label(label="Hotwords"))
 
-        # Tab 3: Log viewer
+        # Tab 4: Log viewer
         log_page = self._create_log_page()
         notebook.append_page(log_page, Gtk.Label(label="Logs"))
 
@@ -182,6 +195,62 @@ class SettingsDialog(Gtk.Dialog):
         """Callback when model selection changes."""
         if radio.get_active():
             self.selected_model_id = model_id
+
+    def _create_post_processor_page(self):
+        """Create post-processor settings page."""
+        box = self._make_page_box()
+
+        title_label = Gtk.Label()
+        title_label.set_markup("<b>Select Post-Processor</b>")
+        title_label.set_halign(Gtk.Align.START)
+        box.pack_start(title_label, False, False, 0)
+
+        desc_label = Gtk.Label(label="Post-processing cleans up ASR output. Regex filler removal always runs. LLM models provide additional text correction.")
+        desc_label.set_halign(Gtk.Align.START)
+        desc_label.set_line_wrap(True)
+        box.pack_start(desc_label, False, False, 0)
+
+        pp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        pp_box.set_margin_top(10)
+
+        radio_group = None
+        for pp_id, preset in self.post_processor_presets.items():
+            label_text = f"{preset['name']} - {preset.get('description', '')}"
+            radio = Gtk.RadioButton.new_with_label_from_widget(radio_group, label_text)
+            if radio_group is None:
+                radio_group = radio
+            if pp_id == self.current_post_processor_id:
+                radio.set_active(True)
+            radio.connect("toggled", self._on_post_processor_toggled, pp_id)
+            pp_box.pack_start(radio, False, False, 0)
+
+        box.pack_start(pp_box, False, False, 0)
+
+        # Current post-processor info
+        info_frame = Gtk.Frame(label="Current Post-Processor")
+        info_frame.set_margin_top(10)
+        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        info_box.set_margin_start(10)
+        info_box.set_margin_end(10)
+        info_box.set_margin_top(5)
+        info_box.set_margin_bottom(5)
+
+        if self.current_post_processor_id in self.post_processor_presets:
+            preset = self.post_processor_presets[self.current_post_processor_id]
+            self.pp_info_label = Gtk.Label(label=f"Current: {preset['name']}")
+        else:
+            self.pp_info_label = Gtk.Label(label="Current: None selected")
+        self.pp_info_label.set_halign(Gtk.Align.START)
+        info_box.pack_start(self.pp_info_label, False, False, 0)
+        info_frame.add(info_box)
+        box.pack_start(info_frame, False, False, 0)
+
+        return box
+
+    def _on_post_processor_toggled(self, radio, pp_id):
+        """Callback when post-processor selection changes."""
+        if radio.get_active():
+            self.selected_post_processor_id = pp_id
 
     def _create_hotwords_page(self):
         """Create hotword configuration page."""
@@ -294,17 +363,23 @@ class SettingsDialog(Gtk.Dialog):
 
     def apply_settings(self):
         """Apply settings."""
-        # Save hotwords
         save_hotwords(self.get_hotwords())
 
-        # If model changed, return the model ID to switch to
+        result = {"model_changed": False, "pp_changed": False}
+
         if self.selected_model_id != self.current_model_id:
-            return {"model_changed": True, "new_model": self.selected_model_id}
+            result["model_changed"] = True
+            result["new_model"] = self.selected_model_id
 
-        return {"model_changed": False}
+        if self.selected_post_processor_id != self.current_post_processor_id:
+            result["pp_changed"] = True
+            result["new_post_processor"] = self.selected_post_processor_id
+
+        return result
 
 
-def show_settings_dialog(parent=None, model_presets=None, current_model_id=None):
+def show_settings_dialog(parent=None, model_presets=None, current_model_id=None,
+                         post_processor_presets=None, current_post_processor_id=None):
     """
     Show the settings dialog.
 
@@ -312,15 +387,19 @@ def show_settings_dialog(parent=None, model_presets=None, current_model_id=None)
         parent: Parent window
         model_presets: Available model presets
         current_model_id: Current model ID
+        post_processor_presets: Available post-processor presets
+        current_post_processor_id: Current post-processor ID
 
     Returns:
-        dict: {"model_changed": bool, "new_model": str or None}
+        dict: {"model_changed": bool, "new_model": str or None,
+               "pp_changed": bool, "new_post_processor": str or None}
     """
     if not HAS_GTK:
         print("GTK not available, cannot show settings dialog")
         return None
 
-    dialog = SettingsDialog(parent, model_presets, current_model_id)
+    dialog = SettingsDialog(parent, model_presets, current_model_id,
+                            post_processor_presets, current_post_processor_id)
     response = dialog.run()
 
     result = None
@@ -335,8 +414,10 @@ if __name__ == "__main__":
     # Test dialog - directly use config from model_presets.py
     if HAS_GTK:
         from model_presets import MODEL_PRESETS, DEFAULT_MODEL
+        from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
 
-        result = show_settings_dialog(None, MODEL_PRESETS, DEFAULT_MODEL)
+        result = show_settings_dialog(None, MODEL_PRESETS, DEFAULT_MODEL,
+                                      POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR)
         print(f"Settings result: {result}")
     else:
         print("GTK not available")

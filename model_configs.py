@@ -4,7 +4,7 @@ ASR model loading and inference logic.
 Configuration is imported from model_presets.py.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 import os
 
@@ -198,6 +198,49 @@ class ModelLoader:
             raise ValueError(f"Unknown framework: {framework}")
 
 
+def _chunk_audio(audio_path: str, chunk_sec: int = 30) -> List[str]:
+    """Split audio into fixed-length chunks, return list of temp file paths.
+
+    Uses a unique ID per call to avoid collisions under concurrency.
+    Cleans up all written chunks if an error occurs mid-way.
+    """
+    import soundfile as sf
+    import uuid
+    from pathlib import Path
+
+    call_id = uuid.uuid4().hex[:8]
+    chunk_paths = []
+    try:
+        with sf.SoundFile(audio_path) as f:
+            frames_per_chunk = int(chunk_sec * f.samplerate)
+            i = 0
+            while True:
+                data = f.read(frames=frames_per_chunk)
+                if len(data) == 0:
+                    break
+                chunk_path = f"/tmp/firered_chunk_{call_id}_{i}.wav"
+                sf.write(chunk_path, data, f.samplerate)
+                chunk_paths.append(chunk_path)
+                i += 1
+    except Exception:
+        for p in chunk_paths:
+            Path(p).unlink(missing_ok=True)
+        raise
+    return chunk_paths
+
+
+def _parse_firered_result(result) -> str:
+    """Extract text from a FireRedASR transcription result."""
+    if isinstance(result, list) and len(result) > 0:
+        item = result[0]
+        if isinstance(item, dict):
+            return item.get('text', '')
+        return str(item)
+    elif isinstance(result, dict):
+        return result.get('text', '')
+    return str(result)
+
+
 class ModelInference:
     """Model inference engine - executes different inference logic based on framework type."""
 
@@ -283,18 +326,45 @@ class ModelInference:
         return decoded[0] if decoded else ""
 
     @staticmethod
-    def transcribe_fireredasr(model: Any, audio_path: str, use_gpu: bool = False) -> str:
-        """FireRedASR framework inference."""
-        result = model.transcribe(['utt1'], [audio_path], args={"use_gpu": use_gpu})
+    def _transcribe_firered_single(model, audio_path: str, use_gpu: bool) -> str:
+        """Transcribe a single audio file with FireRedASR."""
+        import torch
 
-        if isinstance(result, list) and len(result) > 0:
-            item = result[0]
-            if isinstance(item, dict):
-                return item.get('text', '')
-            return str(item)
-        elif isinstance(result, dict):
-            return result.get('text', '')
-        return str(result)
+        if use_gpu:
+            with torch.amp.autocast('cuda', dtype=torch.float16):
+                result = model.transcribe(['utt1'], [audio_path], args={"use_gpu": use_gpu})
+        else:
+            result = model.transcribe(['utt1'], [audio_path], args={"use_gpu": use_gpu})
+        return _parse_firered_result(result)
+
+    @staticmethod
+    def transcribe_fireredasr(model: Any, audio_path: str, use_gpu: bool = False) -> str:
+        """FireRedASR framework inference with automatic chunking for long audio.
+
+        Audio longer than 30s is split into 30s chunks to avoid CUDA OOM on 8GB VRAM.
+        """
+        import soundfile as sf
+        from pathlib import Path
+
+        info = sf.info(audio_path)
+        duration = info.duration
+
+        if duration <= 30:
+            return ModelInference._transcribe_firered_single(model, audio_path, use_gpu)
+
+        # Long audio: chunk into 30s segments to avoid OOM
+        logging.info(f"FireRedASR: audio {duration:.1f}s > 30s, chunking...")
+        chunks = _chunk_audio(audio_path, chunk_sec=30)
+        texts = []
+        try:
+            for chunk_path in chunks:
+                text = ModelInference._transcribe_firered_single(model, chunk_path, use_gpu)
+                texts.append(text)
+        finally:
+            # Always clean up chunk files
+            for chunk_path in chunks:
+                Path(chunk_path).unlink(missing_ok=True)
+        return "".join(texts)
 
     @classmethod
     def transcribe(
