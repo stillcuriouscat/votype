@@ -51,14 +51,6 @@ POST_PROCESSOR_PRESETS = {
             "n_gpu_layers": 0,  # CPU-only: ASR model occupies all GPU VRAM
         },
     },
-    "firered-punc": {
-        "name": "FireRedPunc",
-        "description": "BERT-based punctuation restoration (101M params, ~86ms CPU)",
-        "framework": "firered-punc",
-        "config": {
-            "model_dir": str(MODELS_DIR / "FireRedPunc"),
-        },
-    },
 }
 
 # Default post-processor (regex only, no LLM overhead)

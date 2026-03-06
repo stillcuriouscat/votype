@@ -43,7 +43,7 @@ LEADING_PUNCT_PATTERN = re.compile(r'^[，,、\s]+')
 
 
 class PostProcessorLoader:
-    """Load post-processor models (llama-cpp GGUF, FireRedPunc BERT)."""
+    """Load post-processor models (llama-cpp GGUF) and punctuation models (FireRedPunc BERT)."""
 
     @staticmethod
     def load_firered_punc(config: dict) -> Any:
@@ -113,12 +113,6 @@ class PostProcessorLoader:
         if framework == "llama-cpp":
             try:
                 return cls.load_llama_model(preset["config"])
-            except Exception as e:
-                raise RuntimeError(f"Failed to load post-processor {preset_id}: {e}")
-
-        if framework == "firered-punc":
-            try:
-                return cls.load_firered_punc(preset["config"])
             except Exception as e:
                 raise RuntimeError(f"Failed to load post-processor {preset_id}: {e}")
 
@@ -245,12 +239,7 @@ class PostProcessorInference:
         preset = POST_PROCESSOR_PRESETS.get(preset_id, {})
         framework = preset.get("framework")
 
-        if framework == "firered-punc" and model is not None:
-            try:
-                result = cls.process_with_firered_punc(model, result)
-            except Exception as e:
-                logging.error(f"FireRedPunc post-processing failed, using regex-only result: {e}")
-        elif framework == "llama-cpp" and model is not None:
+        if framework == "llama-cpp" and model is not None:
             prompt_template = preset.get("config", {}).get("prompt_template", "")
             if prompt_template:
                 try:

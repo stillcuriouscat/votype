@@ -72,7 +72,8 @@ class TestFireRedPuncIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Load FireRedPunc model once for all integration tests."""
-        cls.model = PostProcessorLoader.load_post_processor("firered-punc")
+        model_dir = os.path.expanduser("~/.local/share/voice-input/models/FireRedPunc")
+        cls.model = PostProcessorLoader.load_firered_punc({"model_dir": model_dir})
 
     def test_model_loads(self):
         """FireRedPunc model loads successfully."""
@@ -96,12 +97,14 @@ class TestFireRedPuncIntegration(unittest.TestCase):
         has_punc = bool(re.search(r'[。，？！、；：]', result))
         self.assertTrue(has_punc, f"Expected Chinese punctuation in: {result}")
 
-    def test_full_pipeline_with_firered_punc(self):
-        """Full process() pipeline with firered-punc preset."""
+    def test_filler_removal_then_punctuation(self):
+        """Filler removal + punctuation pipeline (daemon's _post_process order)."""
         text = "嗯今天天气不错我们出去走走吧"
-        result = PostProcessorInference.process(text, self.model, "firered-punc")
-        # Filler removed + punctuation added
-        self.assertNotIn("嗯", result)
+        # Step 1: Remove fillers (as daemon does)
+        cleaned = PostProcessorInference.remove_fillers(text)
+        self.assertNotIn("嗯", cleaned)
+        # Step 2: Apply punctuation (as daemon does when punc_model is set)
+        result = PostProcessorInference.process_with_firered_punc(self.model, cleaned)
         has_punc = bool(re.search(r'[。，？！、；：]', result))
         self.assertTrue(has_punc, f"Expected Chinese punctuation in: {result}")
 
