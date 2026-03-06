@@ -779,13 +779,41 @@ class ASRDaemon:
             print("  Falling back to regex-only mode")
 
     def _post_process(self, text):
-        """Apply post-processing to transcribed text."""
+        """Apply post-processing to transcribed text.
+
+        Pipeline: regex filler removal -> auto-punctuation (if needed) -> LLM refinement (if selected).
+        """
         import time
         _log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
         t0 = time.time()
-        result = PostProcessorInference.process(
-            text, self.post_processor_model, self.current_post_processor_id
-        )
+
+        # Step 1: Always remove fillers (regex)
+        result = PostProcessorInference.remove_fillers(text)
+
+        # Step 2: Auto-punctuation (model-config driven, separate from post-processor)
+        if self.punc_model is not None and result:
+            try:
+                result = PostProcessorInference.process_with_firered_punc(
+                    self.punc_model, result
+                )
+                _log("PUNC", f"applied punctuation: {result[:120]}")
+            except Exception as e:
+                _log("PUNC", f"FAILED: {e}")
+
+        # Step 3: Optional LLM post-processing
+        if result and self.post_processor_model is not None:
+            preset = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {})
+            framework = preset.get("framework")
+            if framework == "llama-cpp":
+                prompt_template = preset.get("config", {}).get("prompt_template", "")
+                if prompt_template:
+                    try:
+                        result = PostProcessorInference.process_with_llm(
+                            self.post_processor_model, result, prompt_template
+                        )
+                    except Exception as e:
+                        logging.error(f"LLM post-processing failed: {e}")
+
         elapsed = time.time() - t0
         _log("PP", f"output ({elapsed:.2f}s): {result[:120]}")
         return result
