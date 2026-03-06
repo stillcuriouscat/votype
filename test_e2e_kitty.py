@@ -5,6 +5,10 @@ Tests the full flow: daemon health → voice recording → ASR transcription →
 appears in Kitty scrollback. Monitors system audio via parecord to verify the
 recording pipeline captured sound.
 
+Auto-punctuation: When the ASR model has auto-punctuation (e.g. firered-asr with
+FireRedPunc), the test automatically verifies Chinese punctuation appears in the
+output — no --post-processor flag needed.
+
 Requirements:
     - voice-input daemon running (`voice-input daemon --start`)
     - Kitty terminal open with remote control enabled
@@ -14,7 +18,7 @@ Requirements:
 Usage:
     python test_e2e_kitty.py --verbose
     python test_e2e_kitty.py --duration 10
-    python test_e2e_kitty.py --post-processor firered-punc --verbose
+    python test_e2e_kitty.py --post-processor none --verbose
 """
 
 import argparse
@@ -100,14 +104,17 @@ def send_to_daemon(command, data=None, timeout=10):
 
 
 def check_daemon():
-    """Ping the daemon and record the result."""
+    """Ping the daemon and record the result.
+
+    Returns the model_id string on success, or None on failure.
+    """
     response = send_to_daemon("ping")
     if response and response.get("status") == "ok":
         model = response.get("model", "unknown")
         record_result("Daemon ping", True, f"model={model}")
-        return True
+        return model
     record_result("Daemon ping", False, "No response or bad status")
-    return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +291,9 @@ DAEMON_LOG = Path("/tmp/voice-input-notify.log")
 
 
 def _check_daemon_log_for_punctuation(punc_chars):
-    """Check recent daemon log [PP] output lines for Chinese punctuation.
+    """Check recent daemon log [PUNC] and [PP] output lines for Chinese punctuation.
 
+    Checks [PUNC] lines (auto-punctuation) and [PP] output lines (post-processor).
     Returns a summary string if found, or None.
     """
     if not DAEMON_LOG.exists():
@@ -298,9 +306,9 @@ def _check_daemon_log_for_punctuation(punc_chars):
         log(f"Failed to read daemon log: {exc}")
         return None
 
-    # Check the last 20 lines for [PP] output entries
-    for line in reversed(lines[-20:]):
-        if "[PP] output" not in line:
+    # Check the last 30 lines for [PUNC] or [PP] output entries
+    for line in reversed(lines[-30:]):
+        if "[PUNC]" not in line and "[PP] output" not in line:
             continue
         found = [c for c in line if c in punc_chars]
         if found:
@@ -308,8 +316,9 @@ def _check_daemon_log_for_punctuation(punc_chars):
             # Extract the text portion after the colon
             parts = line.split(": ", 2)
             snippet = parts[-1][:80] if len(parts) > 2 else line[-80:]
-            log(f"Daemon log punctuation: {unique} in '{snippet}'")
-            return f"{unique} (in '{snippet}')"
+            tag = "[PUNC]" if "[PUNC]" in line else "[PP]"
+            log(f"Daemon log punctuation ({tag}): {unique} in '{snippet}'")
+            return f"{unique} ({tag} in '{snippet}')"
 
     log("No punctuation found in recent daemon log entries")
     return None
@@ -353,13 +362,19 @@ def run_test(duration=8, post_processor=None):
 
     # -- Pre-checks ----------------------------------------------------------
     print("[Pre-checks]")
-    daemon_ok = check_daemon()
+    model_id = check_daemon()
     kitty_socket = find_kitty_socket()
     monitor_source = get_monitor_source()
 
-    if not daemon_ok:
+    if not model_id:
         print("\nAborting: daemon not reachable.")
         return False
+
+    # Models with punctuation='firered-punc' in MODEL_PRESETS auto-load FireRedPunc
+    AUTO_PUNC_MODELS = {"firered-asr"}
+    auto_punc_expected = model_id in AUTO_PUNC_MODELS
+    if auto_punc_expected:
+        log(f"Auto-punctuation expected for model: {model_id}")
     if not kitty_socket:
         print("\nAborting: no Kitty socket found.")
         return False
@@ -532,9 +547,11 @@ def run_test(duration=8, post_processor=None):
         record_result("New text in Kitty", False,
                        f"Marker not found (scrollback={final_len} chars)")
 
-    # -- Punctuation verification (when post-processor is set) ---------------
-    if post_processor:
+    # -- Punctuation verification (auto-punctuation or explicit post-processor)
+    if auto_punc_expected or post_processor:
         print("\n[Punctuation verification]")
+        punc_source = "auto-punctuation" if auto_punc_expected else f"post-processor={post_processor}"
+        log(f"Checking punctuation ({punc_source})")
         punc_chars = set("。，？！、；：")
         # Scan raw scrollback (before noise filtering) — tmux/mosh borders
         # can cause the noise filter to strip transcribed text with leading spaces.
@@ -550,9 +567,10 @@ def run_test(duration=8, post_processor=None):
             record_result("Chinese punctuation", True,
                            f"Found: {unique} (in '{snippet}')")
         else:
-            # Fallback: check daemon log for post-processor output with punctuation.
-            # This still verifies the full E2E pipeline ran — audio was recorded,
-            # ASR transcribed, and FireRedPunc added punctuation.
+            # Fallback: check daemon log for [PUNC] (auto-punctuation) or
+            # [PP] (post-processor) output with punctuation. This still verifies
+            # the full E2E pipeline ran — audio recorded, ASR transcribed, and
+            # punctuation was applied.
             log_punc = _check_daemon_log_for_punctuation(punc_chars)
             if log_punc:
                 record_result("Chinese punctuation", True,
@@ -607,7 +625,7 @@ def main():
     )
     parser.add_argument(
         "--post-processor", type=str, default=None,
-        help="Switch daemon to this post-processor before test (e.g. firered-punc)",
+        help="Switch daemon to this LLM post-processor before test (e.g. none, chinese-text-correction)",
     )
     args = parser.parse_args()
     verbose = args.verbose
