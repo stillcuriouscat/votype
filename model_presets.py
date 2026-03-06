@@ -16,6 +16,7 @@ MODEL_PRESETS = {
         "name": "Fun-ASR-Nano",
         "description": "Latest end-to-end model, 31 languages, high accuracy low latency",
         "framework": "funasr",
+        "punctuation": "builtin",
         "config": {
             "model": "FunAudioLLM/Fun-ASR-Nano-2512",
             "vad_model": "fsmn-vad",
@@ -26,6 +27,7 @@ MODEL_PRESETS = {
         "name": "Paraformer-zh",
         "description": "Fast and lightweight, Chinese-optimized (CPU mode)",
         "framework": "funasr",
+        "punctuation": "builtin",
         "force_cpu": True,  # RTX 5060 (sm_120) incompatible with current PyTorch, requires CPU
         "config": {
             "model": "paraformer-zh",
@@ -37,6 +39,7 @@ MODEL_PRESETS = {
         "name": "SenseVoice",
         "description": "Chinese-English mixed, multilingual support",
         "framework": "funasr",
+        "punctuation": "builtin",
         "config": {
             "model": "iic/SenseVoiceSmall",
         },
@@ -47,6 +50,10 @@ MODEL_PRESETS = {
         "name": "FireRedASR-AED",
         "description": "Xiaohongshu AED model, Chinese SOTA, Chinese-English mixed optimization",
         "framework": "fireredasr",
+        "punctuation": "firered-punc",
+        "punc_config": {
+            "model_dir": "~/.local/share/voice-input/models/FireRedPunc",
+        },
         "config": {
             "model_type": "aed",
             "model_id": "FireRedTeam/FireRedASR-AED-L",
