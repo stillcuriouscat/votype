@@ -153,6 +153,43 @@ class PostProcessorInference:
         return result.strip()
 
     @staticmethod
+    def process_with_firered_punc(model: Any, text: str) -> str:
+        """Process text through FireRedPunc for punctuation restoration.
+
+        Preserves original English case by lowercasing input for the model
+        (prevents tokenizer [UNK] on uppercase) and restoring case after.
+
+        Args:
+            model: FireRedPunc instance
+            text: Text to add punctuation to
+
+        Returns:
+            Punctuated text with original English case preserved
+        """
+        if not text:
+            return text
+
+        # Build case mapping: lowered -> original for English words
+        orig_words = {w.lower(): w for w in re.findall(r'[a-zA-Z]+', text)}
+
+        # FireRedPunc expects lowercase English to avoid [UNK] tokens
+        lowered = text.lower() if orig_words else text
+
+        # Run punctuation restoration (batch API: list in, list of dicts out)
+        results = model.process([lowered])
+        result = results[0]["punc_text"]
+
+        # Restore original English case
+        if orig_words:
+            result = re.sub(
+                r'[a-zA-Z]+',
+                lambda m: orig_words.get(m.group(), m.group()),
+                result,
+            )
+
+        return result
+
+    @staticmethod
     def process_with_llm(model: Any, text: str, prompt_template: str) -> str:
         """Process text through an LLM for refinement.
 
@@ -204,9 +241,16 @@ class PostProcessorInference:
         if not result:
             return result
 
-        # Step 2: Optional LLM refinement
+        # Step 2: Optional model-based refinement
         preset = POST_PROCESSOR_PRESETS.get(preset_id, {})
-        if preset.get("framework") == "llama-cpp" and model is not None:
+        framework = preset.get("framework")
+
+        if framework == "firered-punc" and model is not None:
+            try:
+                result = cls.process_with_firered_punc(model, result)
+            except Exception as e:
+                logging.error(f"FireRedPunc post-processing failed, using regex-only result: {e}")
+        elif framework == "llama-cpp" and model is not None:
             prompt_template = preset.get("config", {}).get("prompt_template", "")
             if prompt_template:
                 try:
