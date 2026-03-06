@@ -546,6 +546,7 @@ class ASRDaemon:
         self.post_processor_model = None
         self.current_post_processor_id = DEFAULT_POST_PROCESSOR
         self.post_processor_framework = None
+        self.punc_model = None  # Auto-punctuation model (separate from post-processor)
     
     def setup_indicator(self):
         """Set up the system tray icon."""
@@ -721,6 +722,30 @@ class ASRDaemon:
             print(f"  ✗ {error_msg}")
             notify("❌ Voice Input", error_msg, urgency="critical")
             raise RuntimeError(error_msg)
+
+    def load_punctuation_model(self):
+        """Auto-load punctuation model based on current ASR model config."""
+        preset = MODEL_PRESETS.get(self.current_model_id, {})
+        punc_type = preset.get("punctuation", "none")
+
+        if punc_type == "firered-punc":
+            punc_config = preset.get("punc_config", {})
+            model_dir = os.path.expanduser(punc_config.get("model_dir", ""))
+            try:
+                self.punc_model = PostProcessorLoader.load_firered_punc({"model_dir": model_dir})
+                _log("PUNC", f"auto-loaded FireRedPunc for {self.current_model_id}")
+                print(f"  Auto-punctuation: FireRedPunc loaded")
+            except Exception as e:
+                _log("PUNC", f"FAILED to load FireRedPunc: {e}")
+                print(f"  Auto-punctuation failed: {e}")
+                self.punc_model = None
+        elif punc_type == "builtin":
+            self.punc_model = None
+            _log("PUNC", f"built-in punctuation for {self.current_model_id}")
+            print(f"  Auto-punctuation: built-in ({self.current_model_id})")
+        else:
+            self.punc_model = None
+            _log("PUNC", f"no punctuation for {self.current_model_id}")
 
     def load_post_processor(self, preset_id=None):
         """Load a post-processor model."""
@@ -925,6 +950,9 @@ class ASRDaemon:
             DAEMON_PID_FILE.unlink(missing_ok=True)
             sys.exit(1)
 
+        # Auto-load punctuation model based on ASR model config
+        self.load_punctuation_model()
+
         # Load post-processor (non-fatal: falls back to regex-only)
         try:
             self.load_post_processor()
@@ -1124,13 +1152,22 @@ def main():
         "post-processor": set_post_processor,
     }
 
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h", "help"):
         print(__doc__)
-        print("\nCommands: start, stop, toggle, daemon, kill, status, models, post-processor, post-processors")
+        print("Commands:")
+        print("  start                  Start recording")
+        print("  stop                   Stop recording and transcribe")
+        print("  toggle                 Toggle recording (bind to hotkey)")
+        print("  daemon                 Start background service")
+        print("  kill                   Stop background service")
+        print("  status                 Show current status and model")
+        print("  models                 List available ASR models")
+        print("  post-processors        List available post-processors")
+        print("  post-processor <id>    Switch post-processor")
         print("\nOptions for daemon:")
         print("  --model <id>           Specify model to load")
         print("  --post-processor <id>  Specify post-processor")
-        sys.exit(1)
+        sys.exit(0)
 
     command = sys.argv[1].lower()
 
