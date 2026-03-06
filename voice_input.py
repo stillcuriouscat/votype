@@ -909,7 +909,9 @@ class ASRDaemon:
                 }
             elif command == "set_post_processor":
                 new_pp_id = (msg.get("data") or {}).get("post_processor_id")
-                if not new_pp_id or new_pp_id not in POST_PROCESSOR_PRESETS:
+                if new_pp_id == "firered-punc":
+                    response = {"error": "firered-punc is now automatic with firered-asr, not a post-processor. Use 'voice-input post-processors' to see available options."}
+                elif not new_pp_id or new_pp_id not in POST_PROCESSOR_PRESETS:
                     response = {"error": f"Unknown post-processor: {new_pp_id}"}
                 elif new_pp_id == self.current_post_processor_id:
                     response = {"status": "ok", "message": "Already using this post-processor"}
@@ -982,6 +984,10 @@ class ASRDaemon:
         self.load_punctuation_model()
 
         # Load post-processor (non-fatal: falls back to regex-only)
+        # Backward compat: firered-punc is no longer a valid post-processor
+        if self.current_post_processor_id == "firered-punc":
+            print("Note: firered-punc is now automatic with firered-asr, using 'none' instead.")
+            self.current_post_processor_id = "none"
         try:
             self.load_post_processor()
         except Exception as e:
@@ -1074,6 +1080,11 @@ def set_post_processor():
         sys.exit(1)
 
     pp_id = sys.argv[2].lower()
+    if pp_id == "firered-punc":
+        print("firered-punc is now automatic with firered-asr, not a post-processor.")
+        print("Punctuation is auto-applied when using firered-asr model.")
+        print(f"Available post-processors: {', '.join(POST_PROCESSOR_PRESETS.keys())}")
+        sys.exit(1)
     if pp_id not in POST_PROCESSOR_PRESETS:
         print(f"Unknown post-processor: {pp_id}")
         print(f"Available: {', '.join(POST_PROCESSOR_PRESETS.keys())}")
@@ -1127,7 +1138,11 @@ def run_daemon(model_id=None, post_processor_id=None):
     """Run the daemon (internal command)"""
     daemon = ASRDaemon(model_id=model_id)
     if post_processor_id:
-        daemon.current_post_processor_id = post_processor_id
+        # Backward compat: firered-punc is no longer a post-processor
+        if post_processor_id == "firered-punc":
+            print("Note: firered-punc is now automatic with firered-asr, ignoring post-processor setting.")
+        else:
+            daemon.current_post_processor_id = post_processor_id
     daemon.run()
 
 
