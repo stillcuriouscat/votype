@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Post-processor preset configurations.
-Defines available text post-processing options for ASR output.
+Defines available LLM text refinement options for ASR output.
 
-Pipeline: ASR transcription -> regex filler removal (always) -> LLM refinement (optional)
+Pipeline: ASR -> regex filler removal (always) -> auto-punctuation (model-specific, e.g. FireRedPunc for firered-asr) -> LLM refinement (optional)
 """
 
 from pathlib import Path

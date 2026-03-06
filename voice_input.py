@@ -2,6 +2,7 @@
 """
 Global Voice Input Tool - Multi-ASR-framework support
 Supports FunASR, Transformers, FireRedASR and more
+Punctuation is auto-applied for firered-asr (via FireRedPunc); other models have built-in punctuation.
 
 Usage:
     voice-input start    # Start recording
@@ -12,8 +13,8 @@ Usage:
     voice-input status   # Show current status and model
     voice-input models   # List available models
     voice-input model <name>  # Switch model (fun-asr-nano/paraformer/sensevoice/firered-asr)
-    voice-input post-processors    # List available post-processors
-    voice-input post-processor <id>  # Switch post-processor (none/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
+    voice-input post-processors    # List available post-processors (LLM text refinement)
+    voice-input post-processor <id>  # Switch LLM post-processor (none/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
 """
 
 import sys
@@ -1205,11 +1206,12 @@ def main():
         print("  kill                   Stop background service")
         print("  status                 Show current status and model")
         print("  models                 List available ASR models")
-        print("  post-processors        List available post-processors")
-        print("  post-processor <id>    Switch post-processor")
+        print("  post-processors        List available LLM post-processors")
+        print("  post-processor <id>    Switch LLM post-processor")
+        print("\nPunctuation is automatic per ASR model (firered-asr uses FireRedPunc).")
         print("\nOptions for daemon:")
         print("  --model <id>           Specify model to load")
-        print("  --post-processor <id>  Specify post-processor")
+        print("  --post-processor <id>  Specify LLM post-processor")
         sys.exit(0)
 
     command = sys.argv[1].lower()
