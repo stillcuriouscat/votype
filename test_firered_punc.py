@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for FireRedPunc integration: case preservation and real model inference."""
+"""Tests for FireRedPunc integration: model config, case preservation, and real model inference."""
 
 import sys
 import os
@@ -10,6 +10,39 @@ import unittest
 sys.path.insert(0, os.path.expanduser("~/code/FireRedASR2S"))
 
 from post_processor_configs import PostProcessorInference, PostProcessorLoader
+from post_processor_presets import POST_PROCESSOR_PRESETS
+from model_presets import MODEL_PRESETS
+
+
+class TestPunctuationArchitecture(unittest.TestCase):
+    """Test that punctuation is configured as ASR model property, not post-processor."""
+
+    def test_firered_asr_has_punctuation_config(self):
+        """firered-asr declares punctuation='firered-punc' in MODEL_PRESETS."""
+        self.assertIn("firered-asr", MODEL_PRESETS)
+        self.assertEqual(MODEL_PRESETS["firered-asr"]["punctuation"], "firered-punc")
+
+    def test_firered_asr_has_punc_config(self):
+        """firered-asr has punc_config with model_dir."""
+        punc_config = MODEL_PRESETS["firered-asr"].get("punc_config")
+        self.assertIsNotNone(punc_config)
+        self.assertIn("model_dir", punc_config)
+
+    def test_builtin_models_have_punctuation_builtin(self):
+        """Models with built-in punctuation declare punctuation='builtin'."""
+        for model_id in ("paraformer", "sensevoice", "fun-asr-nano"):
+            with self.subTest(model_id=model_id):
+                self.assertEqual(MODEL_PRESETS[model_id]["punctuation"], "builtin")
+
+    def test_firered_punc_not_in_post_processor_presets(self):
+        """firered-punc is NOT a post-processor preset (it's now automatic)."""
+        self.assertNotIn("firered-punc", POST_PROCESSOR_PRESETS)
+
+    def test_all_models_have_punctuation_key(self):
+        """Every MODEL_PRESETS entry has a 'punctuation' key."""
+        for model_id, preset in MODEL_PRESETS.items():
+            with self.subTest(model_id=model_id):
+                self.assertIn("punctuation", preset)
 
 
 class TestCasePreservation(unittest.TestCase):
