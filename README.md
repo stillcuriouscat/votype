@@ -65,6 +65,8 @@ voice-input daemon --model sensevoice     # Start with a specific model
 voice-input toggle                        # Toggle recording (auto-starts daemon if needed)
 voice-input status                        # Show current status and model info
 voice-input models                        # List available models
+voice-input post-processors               # List available LLM post-processors
+voice-input post-processor <id>           # Switch LLM post-processor (none/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
 voice-input kill                          # Stop the daemon
 ```
 
@@ -245,13 +247,15 @@ cat /tmp/voice-input-notify.log
 ### Project Structure
 
 ```
-voice_input.py        # Main entry point (CLI, daemon, recording logic)
-model_presets.py      # Model configuration (presets, device, hotwords)
-model_configs.py      # Model loading and inference logic
-settings_dialog.py    # GTK settings dialog
-install.sh            # System installation script
-deploy.sh             # Development deployment script
-icons/                # Tray icon assets (idle, recording, processing)
+voice_input.py              # Main entry point (CLI, daemon, recording logic)
+model_presets.py            # Model configuration (presets, device, hotwords)
+model_configs.py            # Model loading and inference logic
+post_processor_presets.py   # Post-processor definitions (LLM text refinement)
+post_processor_configs.py   # Post-processor loading and inference logic
+settings_dialog.py          # GTK settings dialog
+install.sh                  # System installation script
+deploy.sh                   # Development deployment script
+icons/                      # Tray icon assets (idle, recording, processing)
 ```
 
 ## Uninstall
