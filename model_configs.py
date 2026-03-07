@@ -199,13 +199,13 @@ class ModelLoader:
 
 
 def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
-                           chunk_ms: int = 10, margin_ms: int = 50) -> str:
-    """Trim leading clipping burst from arecord startup.
+                           chunk_ms: int = 10, min_clean_ms: int = 30) -> str:
+    """Trim leading clipping burst from recorder startup.
 
-    Scans from the start in chunk_ms-sized windows until RMS drops below
-    threshold, then adds margin_ms of extra safety margin.  Returns a
-    temp file path with the trimmed audio, or the original path if no
-    clipping is detected.
+    Scans from the start in chunk_ms-sized windows. Clipping ends when
+    min_clean_ms consecutive chunks are all below threshold (handles brief
+    dips in clipping). Returns a temp file path with the trimmed audio,
+    or the original path if no clipping is detected.
     """
     import soundfile as sf
     import numpy as np
@@ -215,27 +215,39 @@ def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
         data, sr = sf.read(audio_path, dtype="int16")
     except Exception:
         return audio_path
-    chunk_size = int(chunk_ms * sr / 1000)  # samples per chunk
+    chunk_size = int(chunk_ms * sr / 1000)
+    total_chunks = len(data) // chunk_size
+    min_clean_chunks = max(1, int(min_clean_ms / chunk_ms))
 
-    # Find first chunk whose RMS is below the clipping threshold
-    first_clean = 0
-    for i in range(len(data) // chunk_size):
+    if total_chunks == 0:
+        return audio_path
+
+    # Check if first chunk is already clean — no clipping to trim
+    first_chunk = data[:chunk_size]
+    first_rms = np.sqrt(np.mean(first_chunk.astype(np.float64) ** 2))
+    if first_rms < threshold:
+        return audio_path
+
+    # Find where clipping ends: need min_clean_chunks consecutive clean chunks
+    consecutive_clean = 0
+    clip_end = total_chunks  # default: all clipping
+    for i in range(total_chunks):
         chunk = data[i * chunk_size:(i + 1) * chunk_size]
         rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
         if rms < threshold:
-            first_clean = i
-            break
-    else:
+            consecutive_clean += 1
+            if consecutive_clean >= min_clean_chunks:
+                # Clipping ended at the start of the first clean chunk in this run
+                clip_end = i - min_clean_chunks + 1
+                break
+        else:
+            consecutive_clean = 0
+
+    if clip_end >= total_chunks:
         # All chunks are clipping — return original unchanged
         return audio_path
 
-    if first_clean == 0:
-        # First chunk already clean — no clipping to trim
-        return audio_path
-
-    margin_samples = int(margin_ms * sr / 1000)
-    trim_sample = first_clean * chunk_size + margin_samples
-    trim_sample = min(trim_sample, len(data))
+    trim_sample = clip_end * chunk_size
     trimmed = data[trim_sample:]
 
     if len(trimmed) == 0:
