@@ -1,0 +1,49 @@
+{
+  "project": "Votype",
+  "branchName": "ralph/pw-record",
+  "description": "Replace arecord with pw-record (PipeWire native) to eliminate intermittent 0-590ms startup clipping that destroys the first 1-5 characters of speech",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Replace arecord with pw-record in start_recording()",
+      "description": "As a user, I want recording to use pw-record (PipeWire native) so there is no startup clipping that destroys the beginning of my speech.",
+      "acceptanceCriteria": [
+        "start_recording() in voice_input.py uses pw-record instead of arecord",
+        "pw-record command: ['pw-record', '--format=s16', '--rate=<SAMPLE_RATE>', '--channels=<CHANNELS>', <audio_file>]",
+        "SIGTERM still used in stop_recording() (pw-record handles it correctly, produces valid WAV)",
+        "SAMPLE_RATE and CHANNELS constants still respected",
+        "Add arecord fallback: if pw-record not found (shutil.which), fall back to arecord with existing params",
+        "Log which recorder is used on first recording"
+      ],
+      "priority": 1,
+      "passes": false
+    },
+    {
+      "id": "US-002",
+      "title": "Update unit tests for pw-record",
+      "description": "As a developer, I want tests to reflect the new pw-record default so CI stays green.",
+      "acceptanceCriteria": [
+        "tests/test_integration.py: verify Popen is called with pw-record when pw-record is available",
+        "tests/conftest.py: cleanup fixture handles both pw-record and arecord processes",
+        "tests/test_process_cleanup.py: updated to handle pw-record process cleanup",
+        "All existing tests pass: pytest tests/ -x"
+      ],
+      "priority": 2,
+      "passes": false
+    },
+    {
+      "id": "US-003",
+      "title": "E2E test: verify no startup clipping with pw-record",
+      "description": "As a developer, I want an automated test proving pw-record eliminates startup clipping.",
+      "acceptanceCriteria": [
+        "Test in tests/test_pw_record.py records 1s with pw-record, analyzes first 200ms RMS in 10ms chunks",
+        "No chunk in first 200ms has RMS >= 30000 (clipping threshold)",
+        "Test runs 5 trials for statistical confidence",
+        "All 5 trials pass: 0 clipping chunks",
+        "Test requires pw-record available (skip if not)"
+      ],
+      "priority": 3,
+      "passes": false
+    }
+  ]
+}

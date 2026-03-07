@@ -198,6 +198,57 @@ class ModelLoader:
             raise ValueError(f"Unknown framework: {framework}")
 
 
+def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
+                           chunk_ms: int = 10, margin_ms: int = 50) -> str:
+    """Trim leading clipping burst from arecord startup.
+
+    Scans from the start in chunk_ms-sized windows until RMS drops below
+    threshold, then adds margin_ms of extra safety margin.  Returns a
+    temp file path with the trimmed audio, or the original path if no
+    clipping is detected.
+    """
+    import soundfile as sf
+    import numpy as np
+    import tempfile
+
+    try:
+        data, sr = sf.read(audio_path, dtype="int16")
+    except Exception:
+        return audio_path
+    chunk_size = int(chunk_ms * sr / 1000)  # samples per chunk
+
+    # Find first chunk whose RMS is below the clipping threshold
+    first_clean = 0
+    for i in range(len(data) // chunk_size):
+        chunk = data[i * chunk_size:(i + 1) * chunk_size]
+        rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
+        if rms < threshold:
+            first_clean = i
+            break
+    else:
+        # All chunks are clipping — return original unchanged
+        return audio_path
+
+    if first_clean == 0:
+        # First chunk already clean — no clipping to trim
+        return audio_path
+
+    margin_samples = int(margin_ms * sr / 1000)
+    trim_sample = first_clean * chunk_size + margin_samples
+    trim_sample = min(trim_sample, len(data))
+    trimmed = data[trim_sample:]
+
+    if len(trimmed) == 0:
+        return audio_path
+
+    trimmed_ms = trim_sample * 1000 / sr
+    logging.info(f"Trimmed {trimmed_ms:.0f}ms of leading clipping")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    sf.write(tmp.name, trimmed, sr, subtype="PCM_16")
+    return tmp.name
+
+
 def _chunk_audio(audio_path: str, chunk_sec: int = 30) -> List[str]:
     """Split audio into fixed-length chunks, return list of temp file paths.
 
@@ -377,7 +428,11 @@ class ModelInference:
         hotwords: str = HOTWORDS
     ) -> str:
         """Unified transcription interface."""
+        original_path = audio_path
         try:
+            # Trim leading clipping from arecord startup
+            audio_path = _trim_leading_clipping(audio_path)
+
             if framework == "funasr":
                 return cls.transcribe_funasr(model, audio_path, model_id, hotwords)
 
@@ -403,3 +458,8 @@ class ModelInference:
         except Exception as e:
             logging.error(f"Transcription failed: {e}")
             raise
+        finally:
+            # Clean up trimmed temp file if one was created
+            if audio_path != original_path:
+                from pathlib import Path
+                Path(audio_path).unlink(missing_ok=True)
