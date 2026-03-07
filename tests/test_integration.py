@@ -189,10 +189,10 @@ class TestRecordingFlow:
                 with patch('voice_input.send_to_daemon', return_value={"status": "ok"}):
                     voice_input.start_recording()
 
-        # Verify Popen was called to start arecord
+        # Verify Popen was called to start recording (pw-record or arecord)
         mock_subprocess.Popen.assert_called()
         call_args = str(mock_subprocess.Popen.call_args)
-        assert "arecord" in call_args
+        assert "pw-record" in call_args or "arecord" in call_args
 
     def test_start_recording_notifies_daemon(self, isolated_environment, mock_subprocess, mock_notify):
         """Starting recording should notify daemon to update status."""
@@ -247,7 +247,7 @@ class TestRecordingFlow:
 
             mock_notify.assert_called()
             call_args = str(mock_notify.call_args)
-            assert "anomal" in call_args.lower() or "not" in call_args.lower() or "State" in call_args
+            assert "abnormal" in call_args.lower() or "no recording" in call_args.lower()
 
 
 # ============ 3. Toggle Command Flow (Race Condition Focus) ============
@@ -293,7 +293,7 @@ class TestToggleRecording:
                 with patch('voice_input.send_to_daemon', return_value={"status": "ok"}):
                     voice_input.toggle_recording()
 
-        # Should call arecord (using Popen not run)
+        # Should call recorder (using Popen not run)
         assert mock_subprocess.Popen.called
 
     def test_toggle_stops_recording_when_already_recording(self, isolated_environment, mock_notify):

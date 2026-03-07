@@ -39,44 +39,43 @@ _ORIGINAL_TYPE_TEXT = voice_input.type_text
 
 # ============ Global Test Isolation ============
 
-def _get_all_arecord_pids():
-    """Get all arecord process PIDs (not limited to test processes).
+def _get_all_recorder_pids():
+    """Get all recorder process PIDs (pw-record and arecord).
 
-    The previous implementation used `pgrep -f "arecord.*pytest"` which was wrong:
-    the arecord command is `arecord -f S16_LE ... /path/to/file.wav`,
-    which doesn't contain "pytest" in the command line, so it couldn't match.
-
-    Fix: match all arecord processes, then only clean up processes added during testing.
+    Checks for both pw-record (PipeWire native) and arecord (ALSA) since
+    the recorder selection depends on system availability.
     """
-    try:
-        result = subprocess.run(
-            ["pgrep", "-x", "arecord"],  # -x for exact process name match
-            capture_output=True,
-            text=True
-        )
-        if result.returncode == 0:
-            return [int(pid) for pid in result.stdout.strip().split('\n') if pid]
-        return []
-    except (FileNotFoundError, ValueError, subprocess.SubprocessError):
-        return []
+    pids = []
+    for proc_name in ["pw-record", "arecord"]:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-x", proc_name],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                pids.extend(int(pid) for pid in result.stdout.strip().split('\n') if pid)
+        except (FileNotFoundError, ValueError, subprocess.SubprocessError):
+            pass
+    return pids
 
 
-def _kill_test_arecord_processes(pids_to_keep=None):
-    """Clean up arecord processes added during testing.
+def _kill_test_recorder_processes(pids_to_keep=None):
+    """Clean up recorder processes (pw-record/arecord) added during testing.
 
     Args:
-        pids_to_keep: Set of arecord process PIDs that existed before testing; these should not be cleaned up.
+        pids_to_keep: Set of recorder PIDs that existed before testing; these should not be cleaned up.
     """
     if pids_to_keep is None:
         pids_to_keep = set()
 
-    current_pids = set(_get_all_arecord_pids())
+    current_pids = set(_get_all_recorder_pids())
     pids_to_kill = current_pids - pids_to_keep
 
     for pid in pids_to_kill:
         try:
             os.kill(pid, signal.SIGTERM)
-            print(f"[cleanup] Killed orphan arecord process: {pid}")
+            print(f"[cleanup] Killed orphan recorder process: {pid}")
         except ProcessLookupError:
             pass
         except PermissionError:
@@ -86,15 +85,15 @@ def _kill_test_arecord_processes(pids_to_keep=None):
 @pytest.fixture(autouse=True)
 def cleanup_test_processes(request):
     """
-    Global autouse fixture to ensure arecord processes created by tests are cleaned up.
+    Global autouse fixture to ensure recorder processes created by tests are cleaned up.
     Cleanup runs even if the test is interrupted (Ctrl+C).
     """
-    # Record arecord processes before the test (these should be kept)
-    initial_pids = set(_get_all_arecord_pids())
+    # Record recorder processes before the test (these should be kept)
+    initial_pids = set(_get_all_recorder_pids())
 
     # Register finalizer (runs even if the test fails)
     def cleanup():
-        _kill_test_arecord_processes(pids_to_keep=initial_pids)
+        _kill_test_recorder_processes(pids_to_keep=initial_pids)
 
     request.addfinalizer(cleanup)
 

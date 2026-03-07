@@ -21,62 +21,42 @@ import voice_input
 class TestProcessCleanup:
     """Test process cleanup functionality"""
 
-    def test_real_arecord_process_is_cleaned_up(self, isolated_environment):
+    def test_real_recorder_process_is_cleaned_up(self, isolated_environment):
         """
-        Verify real arecord processes are cleaned up after test ends.
+        Verify real recorder processes are cleaned up after test ends.
 
-        This test:
-        1. Starts a real arecord process
-        2. Records the process PID
-        3. Uses try/finally to ensure cleanup (not relying on fixture)
-
-        Note: The previous implementation relied on cleanup_test_processes fixture,
-        which used `pgrep -f "arecord.*pytest"` matching and could not find real
-        arecord processes. Now uses try/finally to ensure cleanup.
+        Uses the same recorder selection as voice_input (pw-record preferred, arecord fallback).
         """
-        # Skip this test if arecord is not available
-        try:
-            subprocess.run(["which", "arecord"], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            pytest.skip("arecord not available")
+        import shutil
+        recorder = "pw-record" if shutil.which("pw-record") else "arecord"
+
+        if not shutil.which(recorder):
+            pytest.skip(f"{recorder} not available")
 
         audio_file = isolated_environment['audio_file']
-        proc = None
         test_pid = None
 
         try:
-            # Start arecord process
-            proc = subprocess.Popen(
-                [
-                    "arecord",
-                    "-f", "S16_LE",
-                    "-r", "16000",
-                    "-c", "1",
-                    "-t", "wav",
-                    str(audio_file)
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            if recorder == "pw-record":
+                cmd = ["pw-record", "--format=s16", "--rate=16000", "--channels=1", str(audio_file)]
+            else:
+                cmd = ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", str(audio_file)]
 
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             test_pid = proc.pid
-            print(f"[test] Started test arecord process: {test_pid}")
+            print(f"[test] Started test {recorder} process: {test_pid}")
 
-            # Wait briefly to ensure the process has actually started
             time.sleep(0.2)
-
-            # Verify the process is running
-            assert os.path.exists(f"/proc/{test_pid}"), "arecord process should be running"
+            assert os.path.exists(f"/proc/{test_pid}"), f"{recorder} process should be running"
 
         except FileNotFoundError:
-            pytest.skip("arecord not available")
+            pytest.skip(f"{recorder} not available")
 
         finally:
-            # Ensure cleanup: clean up process regardless of test success/failure/exception
             if test_pid is not None:
                 try:
                     os.kill(test_pid, 9)
-                    print(f"[test] Cleaned up arecord process {test_pid}")
+                    print(f"[test] Cleaned up {recorder} process {test_pid}")
                 except ProcessLookupError:
                     print(f"[test] Process {test_pid} already terminated")
 
@@ -94,20 +74,16 @@ class TestProcessCleanup:
         if not shutil.which("pgrep"):
             pytest.skip("pgrep not available in this environment")
 
-        # Use correct pgrep command: exact match on process name "arecord"
-        # Previously using "arecord.*pytest" was wrong because arecord command line doesn't contain "pytest"
-        result = subprocess.run(
-            ["pgrep", "-x", "arecord"],  # -x for exact process name match
-            capture_output=True,
-            text=True
-        )
-
-        # Note: This checks for any arecord processes
-        # Under normal circumstances (user is not using voice input), there should be no arecord processes
-        if result.returncode == 0:
-            pids = [pid for pid in result.stdout.strip().split('\n') if pid]
-            # Just warn, don't fail, because user may be actively using voice input
-            print(f"[warning] Found arecord processes: {pids}")
-            print("[warning] This may be user's actual recording session, not orphan processes")
+        # Check for orphan recorder processes (pw-record and arecord)
+        for proc_name in ["pw-record", "arecord"]:
+            result = subprocess.run(
+                ["pgrep", "-x", proc_name],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                pids = [pid for pid in result.stdout.strip().split('\n') if pid]
+                print(f"[warning] Found {proc_name} processes: {pids}")
+                print("[warning] This may be user's actual recording session, not orphan processes")
 
         print("[test] Cleanup fixture check completed")
