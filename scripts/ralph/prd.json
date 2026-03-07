@@ -16,7 +16,7 @@
         "Log which recorder is used on first recording"
       ],
       "priority": 1,
-      "passes": false
+      "passes": true
     },
     {
       "id": "US-002",
@@ -29,7 +29,7 @@
         "All existing tests pass: pytest tests/ -x"
       ],
       "priority": 2,
-      "passes": false
+      "passes": true
     },
     {
       "id": "US-003",
@@ -43,7 +43,7 @@
         "Test requires pw-record available (skip if not)"
       ],
       "priority": 3,
-      "passes": false
+      "passes": true
     }
   ]
 }
