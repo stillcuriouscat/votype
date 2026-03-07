@@ -18,7 +18,7 @@ Qwen2-Audio-7B-Instruct/
 # Tool configs
 .claude/
 .playwright-mcp/
-CLAUDE.md
+/CLAUDE.md
 
 # Legacy/duplicate directories
 voice_input/
