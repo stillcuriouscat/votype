@@ -101,10 +101,22 @@ Right-click the tray icon to:
 
 The tool auto-detects the active window type:
 
-- **Terminal windows** (gnome-terminal, konsole, xfce4-terminal, etc.): pastes via `Ctrl+Shift+V`
+- **Kitty terminal**: uses native `kitty @ send-text` API for direct text injection -- bypasses the clipboard entirely, so your clipboard is never touched
+- **Other terminals** (gnome-terminal, konsole, xfce4-terminal, etc.): pastes via `Ctrl+Shift+V`
 - **GUI applications** (browsers, editors, etc.): pastes via `Ctrl+V`
 
-The original clipboard content is preserved after pasting.
+The original clipboard content is preserved after pasting (except for Kitty, which does not use the clipboard at all).
+
+#### Kitty Configuration
+
+To enable native text injection in Kitty, add the following to your `~/.config/kitty/kitty.conf`:
+
+```
+allow_remote_control socket-only
+listen_on unix:/tmp/kitty-socket
+```
+
+Restart Kitty after making this change. Votype will automatically detect the Kitty socket and use the native API.
 
 ## Troubleshooting
 
