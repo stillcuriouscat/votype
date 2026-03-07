@@ -19,6 +19,7 @@ Usage:
 
 import sys
 import os
+import fcntl
 import subprocess
 import signal
 import socket
@@ -55,6 +56,7 @@ PID_FILE = CONFIG_DIR / "recording.pid"
 AUDIO_FILE = CONFIG_DIR / "recording.wav"  # Legacy, kept for compatibility
 AUDIO_PATH_FILE = CONFIG_DIR / "recording_path.txt"  # Stores current recording file path
 DAEMON_PID_FILE = CONFIG_DIR / "daemon.pid"
+DAEMON_LOCK_FILE = CONFIG_DIR / "daemon.lock"
 SOCKET_PATH = CONFIG_DIR / "daemon.sock"
 
 # Recording parameters
@@ -158,8 +160,34 @@ def _cleanup_daemon_files():
     SOCKET_PATH.unlink(missing_ok=True)
 
 
+def _is_daemon_lock_held():
+    """Check if the daemon lock file is held by another process.
+
+    Uses fcntl.flock to probe the lock. If we can't acquire it,
+    a daemon is running (even if PID file hasn't been written yet).
+    """
+    if not DAEMON_LOCK_FILE.exists():
+        return False
+    try:
+        fd = open(DAEMON_LOCK_FILE, 'r')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got the lock — no daemon holding it
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        except (IOError, OSError):
+            return True  # Lock held by another process
+        finally:
+            fd.close()
+    except (IOError, OSError):
+        return False
+
+
 def is_daemon_running():
     """Check whether the daemon is running."""
+    # Fast path: check flock (covers startup race before PID file is written)
+    if _is_daemon_lock_held():
+        return True
     if not DAEMON_PID_FILE.exists():
         return False
     try:
@@ -976,12 +1004,17 @@ class ASRDaemon:
         """Run the daemon"""
         ensure_config_dir()
 
-        # Single-instance check: exit immediately if another daemon is already running
-        if is_daemon_running():
-            print("Another daemon instance is already running. Exiting.")
+        # Acquire exclusive file lock — prevents two daemons from running simultaneously.
+        # The lock is held for the daemon's lifetime and auto-released on crash/exit.
+        self._lock_fd = open(DAEMON_LOCK_FILE, 'w')
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            print("Another daemon instance is already running (lock held). Exiting.")
+            self._lock_fd.close()
             return
 
-        # Write PID file immediately to prevent race conditions
+        # Write PID file
         DAEMON_PID_FILE.write_text(str(os.getpid()))
 
         # Remove old socket file
@@ -1040,6 +1073,8 @@ class ASRDaemon:
         self.running = False
         SOCKET_PATH.unlink(missing_ok=True)
         DAEMON_PID_FILE.unlink(missing_ok=True)
+        if hasattr(self, '_lock_fd'):
+            self._lock_fd.close()
         print("Daemon stopped")
 
 
