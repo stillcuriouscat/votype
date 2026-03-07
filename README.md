@@ -26,7 +26,8 @@ Global voice typing for Linux -- speak and text appears at your cursor in any ap
 - Ubuntu 22.04+ with X11 session
 - Python 3.8+
 - NVIDIA GPU recommended (CUDA support for faster inference)
-- System packages: `arecord`, `xdotool`, `xclip`, `libnotify-bin`
+- System packages: `pw-record` (PipeWire), `xdotool`, `xclip`, `libnotify-bin`
+- **Note:** `arecord` (ALSA) is supported as a fallback for systems without PipeWire
 
 ## Installation
 
@@ -110,9 +111,10 @@ The original clipboard content is preserved after pasting.
 ### No audio recorded
 
 ```bash
-# Check available microphones
-arecord -l
-# Test recording and playback
+# Test recording and playback with PipeWire (preferred)
+pw-record --target 0 test.wav & sleep 3 && kill %1 && pw-play test.wav
+
+# Fallback: test with ALSA (non-PipeWire systems)
 arecord -d 3 test.wav && aplay test.wav
 ```
 
