@@ -23,6 +23,7 @@ import subprocess
 import signal
 import socket
 import json
+import shutil
 import threading
 import time
 import logging
@@ -59,6 +60,10 @@ SOCKET_PATH = CONFIG_DIR / "daemon.sock"
 # Recording parameters
 SAMPLE_RATE = 16000
 CHANNELS = 1
+
+# Recorder selection: prefer pw-record (PipeWire native, no startup clipping)
+# Fall back to arecord (ALSA) if pw-record is unavailable
+_RECORDER = "pw-record" if shutil.which("pw-record") else "arecord"
 
 # Current model state file
 MODEL_STATE_FILE = CONFIG_DIR / "current_model.txt"
@@ -234,18 +239,27 @@ def start_recording():
     if is_daemon_running():
         send_to_daemon("recording_start")
 
-    # Use Popen to start arecord (better process management)
+    # Use Popen to start recording (better process management)
     try:
-        # Use Popen directly instead of shell to avoid extra shell process
-        proc = subprocess.Popen(
-            [
+        if _RECORDER == "pw-record":
+            cmd = [
+                "pw-record",
+                f"--format=s16",
+                f"--rate={SAMPLE_RATE}",
+                f"--channels={CHANNELS}",
+                str(audio_file)
+            ]
+        else:
+            cmd = [
                 "arecord",
                 "-f", "S16_LE",
                 "-r", str(SAMPLE_RATE),
                 "-c", str(CHANNELS),
                 "-t", "wav",
                 str(audio_file)
-            ],
+            ]
+        proc = subprocess.Popen(
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True  # Create new session to decouple from parent process
@@ -253,7 +267,7 @@ def start_recording():
 
         pid = proc.pid
         PID_FILE.write_text(str(pid))
-        print(f"Recording started (PID: {pid}, file: {audio_file.name})")
+        print(f"Recording started (PID: {pid}, recorder: {_RECORDER}, file: {audio_file.name})")
     except (FileNotFoundError, OSError) as e:
         AUDIO_PATH_FILE.unlink(missing_ok=True)
         if is_daemon_running():
