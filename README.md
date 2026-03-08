@@ -66,7 +66,7 @@ voice-input toggle                        # Toggle recording (auto-starts daemon
 voice-input status                        # Show current status and model info
 voice-input models                        # List available models
 voice-input post-processors               # List available LLM post-processors
-voice-input post-processor <id>           # Switch LLM post-processor (none/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
+voice-input post-processor <id>           # Switch post-processor (none/haiku-fix/chinese-text-correction/qwen3-0.6b/minicpm4-0.5b)
 voice-input kill                          # Stop the daemon
 ```
 
@@ -119,6 +119,35 @@ listen_on unix:/tmp/kitty-socket
 ```
 
 Restart Kitty after making this change. Votype will automatically detect the Kitty socket and use the native API.
+
+## SSH Haiku Post-Processor
+
+The `haiku-fix` post-processor sends ASR output to Claude Haiku via SSH for error correction. It fixes misrecognized English words, homophones, and repeated words.
+
+### Requirements
+
+- SSH access to a server with Claude CLI installed
+- The server host configured as `oracle-cloud` in `~/.ssh/config`
+
+### SSH ControlMaster (Recommended)
+
+To reduce SSH connection overhead from ~1s to near-zero for subsequent calls, add the following to `~/.ssh/config`:
+
+```
+Host oracle-cloud
+    HostName <your-server-ip>
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519_oracle
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 600
+```
+
+`ControlPersist 600` keeps the connection open for 10 minutes after the last use. This means only the first transcription has SSH connection overhead; subsequent calls reuse the existing connection.
+
+### Glossary Vocabulary
+
+Votype automatically learns from Haiku corrections. When Haiku fixes a word (e.g., "Raf" -> "Ralph"), the correction is saved to `~/.local/share/voice-input/vocab.json`. After enough occurrences (default: 3), the correction is applied locally via regex before sending to Haiku, reducing latency.
 
 ## Troubleshooting
 
