@@ -6,11 +6,16 @@ Configuration is imported from post_processor_presets.py.
 Pipeline: regex filler removal (always) -> LLM refinement (optional)
 """
 
+import json
 import re
 import logging
 from typing import Any, Optional
 
-from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
+from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR, VOICE_INPUT_DATA_DIR
+
+
+# Vocab file path — derived from shared VOICE_INPUT_DATA_DIR constant
+VOCAB_PATH = VOICE_INPUT_DATA_DIR / "vocab.json"
 
 
 # Regex patterns for filler words (Chinese + English)
@@ -40,6 +45,99 @@ ENGLISH_FILLER_PATTERN = re.compile(
 REPEATED_PUNCT_PATTERN = re.compile(r'[，,、]{2,}')
 # Pattern for leading punctuation
 LEADING_PUNCT_PATTERN = re.compile(r'^[，,、\s]+')
+
+
+def load_vocab(vocab_path=None):
+    """Load glossary vocab from JSON file.
+
+    Vocab format: {"correct_term": {"variants": {"error_form": count, ...}}, ...}
+
+    Args:
+        vocab_path: Path to vocab.json. Defaults to VOCAB_PATH.
+
+    Returns:
+        dict: Vocab dictionary, or {} if file missing/invalid.
+    """
+    path = vocab_path or VOCAB_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def apply_vocab(text, vocab, min_count):
+    """Replace known ASR error variants with correct terms.
+
+    Collects all (variant, correct_term) pairs where variant count >= min_count,
+    sorts by variant length descending (longer variants first to handle overlaps),
+    then applies regex replacements.
+
+    Chinese variants: no word boundary (direct substring replacement).
+    English variants: word boundary + case-insensitive matching.
+
+    Args:
+        text: Input text to fix.
+        vocab: Vocab dict {correct: {variants: {error: count}}}.
+        min_count: Minimum variant count threshold.
+
+    Returns:
+        Text with known error variants replaced.
+    """
+    if not text or not vocab:
+        return text
+
+    # Collect all (variant, correct_term) pairs meeting min_count threshold
+    pairs = []
+    for correct_term, entry in vocab.items():
+        variants = entry.get("variants", {})
+        for variant, count in variants.items():
+            if count >= min_count:
+                pairs.append((variant, correct_term))
+
+    if not pairs:
+        return text
+
+    # Sort by variant length descending — longer variants first (R2-M1)
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+
+    result = text
+    for variant, correct_term in pairs:
+        # Detect if variant is Chinese (contains CJK characters)
+        if re.search(r'[\u4e00-\u9fff]', variant):
+            # Chinese: no word boundary
+            pattern = re.escape(variant)
+            result = re.sub(pattern, correct_term, result)
+        else:
+            # English: ASCII letter boundary + case-insensitive (R2-L1)
+            # Use (?<![a-zA-Z]) and (?![a-zA-Z]) instead of \b because
+            # Python treats CJK as \w, so \b won't match at CJK-English boundaries
+            pattern = r'(?<![a-zA-Z])' + re.escape(variant) + r'(?![a-zA-Z])'
+            result = re.sub(pattern, correct_term, result, flags=re.IGNORECASE)
+
+    return result
+
+
+def glossary_context(vocab):
+    """Generate glossary context string for Haiku prompt.
+
+    Lists correct terms from vocab so Haiku can recognize them.
+
+    Args:
+        vocab: Vocab dict {correct: {variants: {error: count}}}.
+
+    Returns:
+        Context string like "Commonly used terms: Ralph, session, Claude Code",
+        or empty string if vocab is empty.
+    """
+    if not vocab:
+        return ""
+
+    terms = list(vocab.keys())
+    return "Commonly used terms: " + ", ".join(terms)
 
 
 class PostProcessorLoader:
