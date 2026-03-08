@@ -6,11 +6,14 @@ Configuration is imported from post_processor_presets.py.
 Pipeline: regex filler removal (always) -> LLM refinement (optional)
 """
 
+import copy
+import difflib
 import json
 import re
 import logging
 import shlex
 import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR, VOICE_INPUT_DATA_DIR
@@ -212,6 +215,108 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
         return text
 
     return output
+
+
+def _tokenize_for_diff(text):
+    """Tokenize text into individual Chinese characters and English words.
+
+    Each CJK character is a separate token; consecutive ASCII letters form one token.
+    Punctuation and whitespace are discarded.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of tokens.
+    """
+    return re.findall(r'[\u4e00-\u9fff]|[a-zA-Z]+', text)
+
+
+def _join_tokens(tokens):
+    """Join tokens back to text.
+
+    Chinese chars joined without separator; English words joined with space.
+
+    Args:
+        tokens: List of tokens (Chinese chars or English words).
+
+    Returns:
+        Joined string.
+    """
+    if not tokens:
+        return ""
+    parts = [tokens[0]]
+    for i in range(1, len(tokens)):
+        is_eng = bool(re.match(r'[a-zA-Z]', tokens[i]))
+        prev_eng = bool(re.match(r'[a-zA-Z]', tokens[i - 1]))
+        if is_eng and prev_eng:
+            parts.append(' ')
+        parts.append(tokens[i])
+    return ''.join(parts)
+
+
+def diff_to_vocab(original, polished, vocab):
+    """Extract word-level replacements from original vs polished and accumulate in vocab.
+
+    Uses SequenceMatcher on tokenized text. Only processes 'replace' opcodes;
+    ignores 'delete' and 'insert' opcodes.
+
+    Args:
+        original: Original ASR text.
+        polished: Haiku-polished text.
+        vocab: Current vocab dict.
+
+    Returns:
+        NEW vocab dict with accumulated replacements (input not mutated).
+    """
+    if original == polished:
+        return copy.deepcopy(vocab)
+
+    orig_tokens = _tokenize_for_diff(original)
+    pol_tokens = _tokenize_for_diff(polished)
+
+    new_vocab = copy.deepcopy(vocab)
+
+    matcher = difflib.SequenceMatcher(None, orig_tokens, pol_tokens)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != 'replace':
+            continue
+
+        error = _join_tokens(orig_tokens[i1:i2])
+        correct = _join_tokens(pol_tokens[j1:j2])
+
+        if not error or not correct:
+            continue
+
+        if correct in new_vocab:
+            old_variants = new_vocab[correct]["variants"]
+            new_vocab[correct] = {
+                "variants": {**old_variants, error: old_variants.get(error, 0) + 1}
+            }
+        else:
+            new_vocab[correct] = {"variants": {error: 1}}
+
+    return new_vocab
+
+
+def save_vocab(vocab, vocab_path=None):
+    """Save vocab dict to JSON file atomically.
+
+    Writes to .tmp file first, then renames (atomic on same filesystem).
+    Uses Path.rename() per CRITIC-R4-L1.
+
+    Args:
+        vocab: Vocab dict to save.
+        vocab_path: Optional path override (for testing). Defaults to VOCAB_PATH.
+    """
+    path = Path(vocab_path) if vocab_path else VOCAB_PATH
+    tmp_path = path.with_suffix('.tmp')
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    tmp_path.rename(path)
 
 
 class PostProcessorLoader:
