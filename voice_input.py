@@ -590,6 +590,7 @@ class ASRDaemon:
         self.current_post_processor_id = DEFAULT_POST_PROCESSOR
         self.post_processor_framework = None
         self.punc_model = None  # Auto-punctuation model (separate from post-processor)
+        self._vocab = {}  # Glossary vocab for ssh-claude (loaded in load_post_processor)
     
     def setup_indicator(self):
         """Set up the system tray icon."""
@@ -804,10 +805,21 @@ class ASRDaemon:
         print(f"Loading post-processor: {preset['name']}")
         print(f"{'='*60}")
 
+        # haiku-expand: not yet implemented — check BEFORE try block (CRITIC-R4-C1)
+        # so the raise propagates to the daemon command handler (inner except swallows all)
+        if preset.get("framework") == "ssh-claude" and not preset.get("config"):
+            notify("Votype", "Haiku Expand is not yet implemented", urgency="normal")
+            raise ValueError("Haiku Expand is not yet implemented")
+
         try:
             self.post_processor_model = PostProcessorLoader.load_post_processor(preset_id)
             self.current_post_processor_id = preset_id
             self.post_processor_framework = preset["framework"]
+            # Load vocab once for ssh-claude framework (cached on instance)
+            if self.post_processor_framework == "ssh-claude":
+                from post_processor_configs import load_vocab
+                self._vocab = load_vocab()
+                _log("PP-LOAD", f"vocab loaded: {len(self._vocab)} terms")
             _log("PP-LOAD", f"loaded: {preset['name']} ({preset_id})")
             print(f"  Post-processor ready: {preset['name']}")
             print(f"{'='*60}\n")
@@ -824,7 +836,9 @@ class ASRDaemon:
     def _post_process(self, text):
         """Apply post-processing to transcribed text.
 
-        Pipeline: regex filler removal -> auto-punctuation (if needed) -> LLM refinement (if selected).
+        Pipeline: regex filler removal -> auto-punctuation (if needed)
+                  -> glossary regex (ssh-claude) -> SSH Haiku (ssh-claude)
+                  -> vocab accumulation (ssh-claude) -> LLM refinement (llama-cpp).
         """
         import time
         _log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
@@ -843,7 +857,30 @@ class ASRDaemon:
             except Exception as e:
                 _log("PUNC", f"FAILED: {e}")
 
-        # Step 3: Optional LLM post-processing
+        # Step 3: SSH Claude post-processing (glossary regex + SSH Haiku + vocab accumulation)
+        if result and self.post_processor_framework == "ssh-claude":
+            from post_processor_configs import (
+                apply_vocab, glossary_context, process_with_ssh_claude,
+                diff_to_vocab, save_vocab,
+            )
+            preset = POST_PROCESSOR_PRESETS[self.current_post_processor_id]
+            config = preset["config"]
+            min_count = config.get("vocab_min_count", 3)
+
+            # Glossary regex replacement
+            result = apply_vocab(result, self._vocab, min_count)
+
+            # SSH Haiku polish with glossary context
+            glossary_ctx = glossary_context(self._vocab)
+            before_haiku = result
+            result = process_with_ssh_claude(result, config, glossary_ctx)
+
+            # Vocab accumulation (only if Haiku changed something)
+            if before_haiku != result:
+                self._vocab = diff_to_vocab(before_haiku, result, self._vocab)
+                save_vocab(self._vocab)
+
+        # Step 4: Optional LLM post-processing
         if result and self.post_processor_model is not None:
             preset = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {})
             framework = preset.get("framework")

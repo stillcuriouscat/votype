@@ -387,6 +387,9 @@ class PostProcessorLoader:
         if framework == "regex":
             return None  # No model needed
 
+        if framework == "ssh-claude":
+            return None  # No model needed; SSH calls handled in _post_process()
+
         if framework == "llama-cpp":
             try:
                 return cls.load_llama_model(preset["config"])
