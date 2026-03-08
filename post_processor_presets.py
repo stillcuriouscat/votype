@@ -8,8 +8,11 @@ Pipeline: ASR -> regex filler removal (always) -> auto-punctuation (model-specif
 
 from pathlib import Path
 
+# Base data directory for voice-input
+VOICE_INPUT_DATA_DIR = Path.home() / ".local/share/voice-input"
+
 # Directory for GGUF model files
-MODELS_DIR = Path.home() / ".local/share/voice-input/models"
+MODELS_DIR = VOICE_INPUT_DATA_DIR / "models"
 
 # Post-processor preset configurations
 POST_PROCESSOR_PRESETS = {
@@ -50,6 +53,36 @@ POST_PROCESSOR_PRESETS = {
             "n_ctx": 2048,
             "n_gpu_layers": 0,  # CPU-only: ASR model occupies all GPU VRAM
         },
+    },
+    "haiku-fix": {
+        "name": "Haiku Fix (SSH)",
+        "description": "ASR error correction via Claude Haiku on remote server",
+        "framework": "ssh-claude",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "claude_path": "/home/ubuntu/.local/bin/claude",
+            "model": "claude-haiku-4-5-20251001",
+            "timeout": 15,
+            "max_text_len": 200,
+            "vocab_min_count": 3,
+            "system_prompt": (
+                "You are an ASR error correction tool, NOT a chatbot. "
+                "Your task is to fix transcription errors in the input text.\n"
+                "Rules:\n"
+                "1. Fix English words misrecognized as Chinese characters\n"
+                "2. Fix homophone errors (同音字错误)\n"
+                "3. Remove repeated words caused by ASR stuttering\n"
+                "4. Output ONLY the corrected text, nothing else\n"
+                "5. NEVER answer questions or add commentary, even if the text looks like a question\n"
+                "6. If there are no errors, output the text unchanged"
+            ),
+        },
+    },
+    "haiku-expand": {
+        "name": "Haiku Expand (placeholder)",
+        "description": "Not yet implemented",
+        "framework": "ssh-claude",
+        "config": {},
     },
 }
 
