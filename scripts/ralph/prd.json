@@ -13,7 +13,7 @@
         "haiku-fix config includes: ssh_host, claude_path, model (claude-haiku-4-5-20251001), timeout (15), max_text_len (200), vocab_min_count (3), system_prompt",
         "CRITIC-R1-C1: timeout must be 15s (empirically: 25-char input took 10.52s at 10s timeout)",
         "haiku-fix system_prompt must include: (1) 'you are ASR correction tool, NOT a chatbot', (2) fix English misrecognized as Chinese, (3) fix homophones, (4) remove repeated words, (5) output corrected text only, (6) NEVER answer questions or add commentary even if text looks like a question, (7) if no errors output unchanged text; glossary terms appended at runtime",
-        "CRITIC-R3-M1: system_prompt MUST include explicit anti-answer instructions — without them, question-like inputs trigger hallucination (68x output, guard fires, correction lost)",
+        "CRITIC-R3-M1: system_prompt MUST include explicit anti-answer instructions \u2014 without them, question-like inputs trigger hallucination (68x output, guard fires, correction lost)",
         "Existing presets (none, chinese-text-correction, qwen3-0.6b, minicpm4-0.5b) unchanged",
         "Tests pass"
       ],
@@ -32,7 +32,7 @@
         "apply_vocab(text, vocab, min_count) replaces error variants with correct terms where variant count >= min_count",
         "Chinese variant replacement works without word boundaries",
         "English variant replacement uses word boundaries to avoid partial matches",
-        "CRITIC-R2-M1: apply_vocab must sort all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants correctly (e.g., '克劳' vs '克劳的')",
+        "CRITIC-R2-M1: apply_vocab must sort all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants correctly (e.g., '\u514b\u52b3' vs '\u514b\u52b3\u7684')",
         "CRITIC-R2-L1: English variant regex uses re.IGNORECASE to handle case mismatches (ASR may output 'Raf' while variant stored as 'raf')",
         "Original text returned unchanged if vocab is empty",
         "glossary_context(vocab) generates a string listing correct terms for Haiku prompt context (e.g., 'Commonly used terms: Ralph, session, Claude Code')",
@@ -68,11 +68,11 @@
     {
       "id": "US-004",
       "title": "Add vocab accumulation via diff after SSH polish",
-      "description": "After SSH Haiku returns polished text, diff original vs result to extract word-level replacements. For each replacement pair (error→correct): if correct term exists in vocab, add error as new variant (count=1) or increment existing variant count. If correct term is new, create new entry. Returns new vocab dict (immutable). Save updated vocab to vocab.json atomically. Haiku should especially accumulate English technical terms.",
+      "description": "After SSH Haiku returns polished text, diff original vs result to extract word-level replacements. For each replacement pair (error\u2192correct): if correct term exists in vocab, add error as new variant (count=1) or increment existing variant count. If correct term is new, create new entry. Returns new vocab dict (immutable). Save updated vocab to vocab.json atomically. Haiku should especially accumulate English technical terms.",
       "acceptanceCriteria": [
         "diff_to_vocab(original, polished, vocab) extracts word-pair replacements and returns a NEW vocab dict (does not mutate input)",
         "Tokenization: individual Chinese characters + English words via regex, NOT consecutive-Chinese-as-one-group",
-        "For each replacement (error→correct): adds error as variant under correct term entry",
+        "For each replacement (error\u2192correct): adds error as variant under correct term entry",
         "CRITIC-R1-M1: For multi-token replace opcodes: join Chinese chars without separator (''.join), join English words with space (' '.join). Only process 'replace' opcodes; ignore 'delete' and 'insert' opcodes",
         "New correct terms: created with variants={error: 1}",
         "Existing correct terms: variant count incremented or new variant added with count=1",
@@ -82,7 +82,7 @@
         "Tests pass with unit tests for diff_to_vocab and save_vocab"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "CRITIC-R2-N4: return new object, not mutate. CRITIC-R2-M2: tokenize Chinese chars individually. CRITIC-R2-L2: mixed Chinese+English token join. CRITIC-R4-L1: save_vocab uses Path.rename() instead of os.rename() (no os import needed, VOCAB_PATH is already a Path object)."
     },
     {
@@ -100,11 +100,11 @@
         "Switching to haiku-expand shows 'not yet implemented' message at switch time (in load_post_processor), not just at transcription time",
         "CRITIC-R1-M2: haiku-expand warning must appear during load_post_processor() so user sees it immediately, not only when they try to record",
         "CRITIC-R3-L2: haiku-expand switch must NOT send contradictory success notification after the 'not implemented' warning",
-        "CRITIC-R4-C1: haiku-expand check+raise MUST be placed BEFORE the try block (between preset assignment and try:), NOT inside it — inner except at line 814 catches all exceptions and prevents propagation to set_post_processor. Move check to after line 805 (after preset = ...) but before try: at line 807",
+        "CRITIC-R4-C1: haiku-expand check+raise MUST be placed BEFORE the try block (between preset assignment and try:), NOT inside it \u2014 inner except at line 814 catches all exceptions and prevents propagation to set_post_processor. Move check to after line 805 (after preset = ...) but before try: at line 807",
         "Tests pass"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "CRITIC-R1-C1: integration point is _post_process() not PostProcessorInference.process(). CRITIC-R1-M5: vocab cached on ASRDaemon instance. CRITIC-R3-L1: update code example to reuse existing preset variable (already assigned at line 801), don't re-fetch with POST_PROCESSOR_PRESETS.get()."
     },
     {
@@ -118,7 +118,7 @@
         "Tests pass"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Do NOT auto-modify ~/.ssh/config. Document the recommended config and let user add it manually."
     }
   ]
