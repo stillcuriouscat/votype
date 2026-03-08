@@ -9,6 +9,8 @@ Pipeline: regex filler removal (always) -> LLM refinement (optional)
 import json
 import re
 import logging
+import shlex
+import subprocess
 from typing import Any, Optional
 
 from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR, VOICE_INPUT_DATA_DIR
@@ -138,6 +140,78 @@ def glossary_context(vocab):
 
     terms = list(vocab.keys())
     return "Commonly used terms: " + ", ".join(terms)
+
+
+def process_with_ssh_claude(text, config, glossary_ctx=""):
+    """Call Claude CLI on remote server via SSH for text polishing.
+
+    System prompt passed via --system-prompt flag, ASR text via stdin.
+    Glossary context appended to system prompt at call time.
+
+    Args:
+        text: ASR transcription text to polish.
+        config: Preset config dict with ssh_host, claude_path, model, timeout, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Polished text on success, original text on any failure.
+    """
+    # Empty text: return immediately without SSH call
+    if not text:
+        return ""
+
+    # Text too long: skip SSH call
+    max_text_len = config.get("max_text_len", 200)
+    if len(text) > max_text_len:
+        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
+        return text
+
+    # Build system prompt with optional glossary context
+    system_prompt = config["system_prompt"]
+    if glossary_ctx:
+        system_prompt += "\n\n" + glossary_ctx
+
+    # Build SSH command (C3+C4+N1+R3-L1)
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        config["claude_path"],
+        "--model", config["model"],
+        "--system-prompt", shlex.quote(system_prompt),
+        "-p",
+    ]
+
+    timeout = config.get("timeout", 15)
+
+    try:
+        result = subprocess.run(
+            cmd, input=text, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logging.warning(f"SSH Claude timed out after {timeout}s")
+        # Lazy import to avoid circular dependency
+        from voice_input import notify
+        notify("Votype", f"SSH Claude timed out after {timeout}s", urgency="low")
+        return text
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "unknown error"
+        logging.error(f"SSH Claude failed (exit {result.returncode}): {stderr}")
+        from voice_input import notify
+        notify("Votype", f"SSH Claude error: {stderr[:100]}", urgency="low")
+        return text
+
+    output = result.stdout.strip()
+
+    # Hallucination guard: output > 5x input length is suspicious
+    if len(output) > len(text) * 5:
+        logging.warning(
+            f"SSH Claude output too long ({len(output)} vs input {len(text)}), "
+            "possible hallucination, using original text"
+        )
+        return text
+
+    return output
 
 
 class PostProcessorLoader:

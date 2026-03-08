@@ -62,7 +62,7 @@
         "Tests pass"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "CRITIC-R1-C4: -p is boolean (--print), prompt is via --system-prompt. CRITIC-R2-N1: use --system-prompt + stdin. CRITIC-R2-N2: hallucination guard 5x. CRITIC-R3-C1: timeout 15s. CRITIC-R3-L1: add -o ConnectTimeout=5 to SSH."
     },
     {

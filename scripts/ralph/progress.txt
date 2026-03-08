@@ -8,6 +8,7 @@ Started: Sat 07 Mar 2026 05:23:21 PM CST
 - 3 pre-existing test failures in test_unit.py (daemon detection + stale default model assertion) — not related to ssh-claude work
 - English regex in mixed CJK text: use `(?<![a-zA-Z])` / `(?![a-zA-Z])` instead of `\b` — Python treats CJK as `\w` so `\b` fails at CJK-English boundaries
 - New module-level functions (load_vocab, apply_vocab, etc.) go before PostProcessorLoader class, after regex patterns
+- Lazy import `from voice_input import notify` inside function body to avoid circular deps; mock target = `voice_input.notify`
 ---
 
 ## 2026-03-08 - US-001
@@ -30,4 +31,15 @@ Started: Sat 07 Mar 2026 05:23:21 PM CST
   - Python \b word boundary fails at CJK-English boundaries (both are \w) — use (?<![a-zA-Z]) / (?![a-zA-Z]) for ASCII-letter-only boundaries
   - apply_vocab sorts all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants
   - Vocab format: {"correct_term": {"variants": {"error_form": count}}} — glossary-oriented, not error-oriented
+---
+
+## 2026-03-08 - US-003
+- Added process_with_ssh_claude() as module-level function in post_processor_configs.py
+- Added subprocess and shlex imports
+- Created tests/test_ssh_claude.py (14 tests, all passing)
+- Files changed: post_processor_configs.py, tests/test_ssh_claude.py
+- **Learnings for future iterations:**
+  - notify() is lazily imported inside function body (`from voice_input import notify`) to avoid circular dependency — test mocking must target `voice_input.notify`, NOT `post_processor_configs.notify`
+  - shlex.quote() protects system_prompt from SSH remote shell word-splitting (subprocess list bypasses local shell, but SSH concatenates args on remote)
+  - subprocess.run with list args + input=text avoids all shell escaping issues for ASR text
 ---
