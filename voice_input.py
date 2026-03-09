@@ -815,8 +815,8 @@ class ASRDaemon:
             self.post_processor_model = PostProcessorLoader.load_post_processor(preset_id)
             self.current_post_processor_id = preset_id
             self.post_processor_framework = preset["framework"]
-            # Load vocab once for ssh-claude framework (cached on instance)
-            if self.post_processor_framework == "ssh-claude":
+            # Load vocab once for SSH-based frameworks (cached on instance)
+            if self.post_processor_framework in ("ssh-claude", "vertex-ai"):
                 from post_processor_configs import load_vocab
                 self._vocab = load_vocab()
                 _log("PP-LOAD", f"vocab loaded: {len(self._vocab)} terms")
@@ -837,8 +837,8 @@ class ASRDaemon:
         """Apply post-processing to transcribed text.
 
         Pipeline: regex filler removal -> auto-punctuation (if needed)
-                  -> glossary regex (ssh-claude) -> SSH Haiku (ssh-claude)
-                  -> vocab accumulation (ssh-claude) -> LLM refinement (llama-cpp).
+                  -> glossary regex (ssh-claude/vertex-ai) -> LLM polish (ssh-claude/vertex-ai)
+                  -> vocab accumulation (ssh-claude/vertex-ai) -> LLM refinement (llama-cpp).
         """
         import time
         _log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
@@ -857,12 +857,18 @@ class ASRDaemon:
             except Exception as e:
                 _log("PUNC", f"FAILED: {e}")
 
-        # Step 3: SSH Claude post-processing (glossary regex + SSH Haiku + vocab accumulation)
-        if result and self.post_processor_framework == "ssh-claude":
+        # Step 3: SSH-based post-processing (glossary regex + LLM polish + vocab accumulation)
+        if result and self.post_processor_framework in ("ssh-claude", "vertex-ai"):
             from post_processor_configs import (
                 apply_vocab, glossary_context, process_with_ssh_claude,
-                diff_to_vocab, save_vocab,
+                process_with_vertex_ai, diff_to_vocab, save_vocab,
             )
+            # Dispatch dict defined AFTER import (CRITIC-R7-C1)
+            process_fn = {
+                "ssh-claude": process_with_ssh_claude,
+                "vertex-ai": process_with_vertex_ai,
+            }[self.post_processor_framework]
+
             preset = POST_PROCESSOR_PRESETS[self.current_post_processor_id]
             config = preset["config"]
             min_count = config.get("vocab_min_count", 3)
@@ -870,14 +876,14 @@ class ASRDaemon:
             # Glossary regex replacement
             result = apply_vocab(result, self._vocab, min_count)
 
-            # SSH Haiku polish with glossary context
+            # LLM polish with glossary context
             glossary_ctx = glossary_context(self._vocab)
-            before_haiku = result
-            result = process_with_ssh_claude(result, config, glossary_ctx)
+            before_polish = result
+            result = process_fn(result, config, glossary_ctx)
 
-            # Vocab accumulation (only if Haiku changed something)
-            if before_haiku != result:
-                self._vocab = diff_to_vocab(before_haiku, result, self._vocab)
+            # Vocab accumulation (only if LLM changed something)
+            if before_polish != result:
+                self._vocab = diff_to_vocab(before_polish, result, self._vocab)
                 save_vocab(self._vocab)
 
         # Step 4: Optional LLM post-processing
