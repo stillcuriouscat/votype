@@ -28,6 +28,10 @@ E2E features verified:
     - virtual-hallucination-guard
     - virtual-haiku-expand-not-implemented
     - virtual-preset-structure
+    - virtual-vertex-preset-structure
+    - virtual-vertex-empty-text-guard
+    - virtual-vertex-text-too-long-guard
+    - virtual-vertex-hallucination-guard
 """
 
 import json
@@ -430,3 +434,108 @@ class TestHaikuExpandNotImplemented:
         # The actual ValueError is raised in voice_input.py load_post_processor()
         # We verify the preset structure here; the pipeline test verifies the raise
         update_feature("virtual-haiku-expand-not-implemented", True)
+
+
+# ===========================================================================
+# Vertex AI preset and guard tests
+# ===========================================================================
+
+class TestVertexPresetStructure:
+    """Verify gemini-fix preset definitions."""
+
+    def test_gemini_fix_preset_exists(self):
+        """gemini-fix preset must exist with correct structure."""
+        from post_processor_presets import POST_PROCESSOR_PRESETS
+
+        assert "gemini-fix" in POST_PROCESSOR_PRESETS
+        preset = POST_PROCESSOR_PRESETS["gemini-fix"]
+        assert preset["framework"] == "vertex-ai"
+        assert "name" in preset
+        assert "description" in preset
+        assert "config" in preset
+        config = preset["config"]
+        assert "ssh_host" in config
+        assert "proxy_script" in config
+        assert "model" in config
+        assert config["model"] == "gemini-2.5-flash"
+        assert "vertex_region" in config
+        assert config["vertex_region"] == "us-central1"
+        assert "timeout" in config
+        assert "min_text_len" in config
+        assert "max_text_len" in config
+        assert "vocab_min_count" in config
+        assert "system_prompt_file" in config
+        update_feature("virtual-vertex-preset-structure", True)
+
+    def test_gemini_fix_prompt_file_exists(self):
+        """gemini-fix prompt file must exist without /no_think."""
+        from post_processor_presets import POST_PROCESSOR_PRESETS, VOICE_INPUT_DATA_DIR
+
+        config = POST_PROCESSOR_PRESETS["gemini-fix"]["config"]
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        assert prompt_path.exists(), f"Prompt file missing: {prompt_path}"
+        content = prompt_path.read_text(encoding="utf-8")
+        assert "/no_think" not in content, "gemini-fix prompt must not contain /no_think"
+
+
+class TestVertexGuardConditions:
+    """Test guard conditions for process_with_vertex_ai."""
+
+    def test_empty_text_returns_empty(self):
+        """Empty text returns empty string without SSH call."""
+        from post_processor_configs import process_with_vertex_ai
+
+        config = {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "timeout": 15,
+            "min_text_len": 45,
+            "max_text_len": 200,
+        }
+        result = process_with_vertex_ai("", config, "")
+        assert result == ""
+        update_feature("virtual-vertex-empty-text-guard", True)
+
+    def test_text_too_long_returns_original(self):
+        """Text exceeding max_text_len returns original."""
+        from post_processor_configs import process_with_vertex_ai
+
+        config = {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "timeout": 15,
+            "min_text_len": 5,
+            "max_text_len": 10,
+        }
+        long_text = "This text is definitely longer than 10 characters"
+        result = process_with_vertex_ai(long_text, config, "")
+        assert result == long_text
+        update_feature("virtual-vertex-text-too-long-guard", True)
+
+    def test_hallucination_guard(self):
+        """Output > 5x input length is rejected."""
+        from post_processor_configs import process_with_vertex_ai
+        from unittest.mock import patch, MagicMock
+
+        config = {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "system_prompt": "test",
+            "timeout": 15,
+            "min_text_len": 5,
+            "max_text_len": 200,
+        }
+        text = "a" * 50  # len 50
+        with patch("post_processor_configs.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="a" * 251, stderr=""  # > 5x
+            )
+            result = process_with_vertex_ai(text, config, "")
+        assert result == text
+        update_feature("virtual-vertex-hallucination-guard", True)

@@ -1,0 +1,222 @@
+{
+  "project": "votype",
+  "last_run": "2026-03-09T14:19:41",
+  "features": [
+    {
+      "id": "real-e2e-ssh-haiku-pipeline",
+      "layer": "L1",
+      "description": "Full pipeline: voice recording -> ASR -> regex -> FireRedPunc -> SSH Haiku correction -> vocab update -> text appears in Kitty",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-ssh-haiku-vocab-accumulation",
+      "layer": "L1",
+      "description": "After SSH Haiku corrects text, vocab.json is created/updated with correction pairs",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-ssh-connectivity",
+      "layer": "L1",
+      "description": "SSH to oracle-cloud succeeds, claude CLI is reachable at expected path",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-chain-ssh-claude-correction",
+      "layer": "L2-real",
+      "description": "Send known-error text via real SSH+Haiku, verify corrected output returned",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "real-chain-vocab-roundtrip",
+      "layer": "L2-real",
+      "description": "Full vocab cycle with real SSH: apply_vocab -> SSH Claude -> diff_to_vocab -> save_vocab, verify vocab.json file state",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "real-chain-glossary-in-prompt",
+      "layer": "L2-real",
+      "description": "Glossary context from vocab is appended to system_prompt and influences Haiku's correction",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-vocab-load-save-cycle",
+      "layer": "L2-virtual",
+      "description": "load_vocab -> save_vocab round-trip produces identical vocab.json file",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-apply-vocab-chinese",
+      "layer": "L2-virtual",
+      "description": "apply_vocab replaces Chinese error variants without word boundary (e.g. \u514b\u52b3\u7684->Claude\u7684)",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-apply-vocab-english",
+      "layer": "L2-virtual",
+      "description": "apply_vocab replaces English error variants with word boundary + case insensitive",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-apply-vocab-overlapping",
+      "layer": "L2-virtual",
+      "description": "apply_vocab sorts variants by length descending, longer variant applied first",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-apply-vocab-min-count",
+      "layer": "L2-virtual",
+      "description": "apply_vocab skips variants with count < min_count threshold",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-diff-to-vocab-chinese",
+      "layer": "L2-virtual",
+      "description": "diff_to_vocab extracts Chinese char replacement pairs via difflib",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-diff-to-vocab-english",
+      "layer": "L2-virtual",
+      "description": "diff_to_vocab extracts English word replacement pairs via difflib",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-diff-to-vocab-immutable",
+      "layer": "L2-virtual",
+      "description": "diff_to_vocab returns new dict, does not mutate input vocab",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-diff-to-vocab-no-change",
+      "layer": "L2-virtual",
+      "description": "diff_to_vocab with identical original/polished returns original vocab unchanged",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-glossary-context",
+      "layer": "L2-virtual",
+      "description": "glossary_context generates correct term list string from vocab",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-empty-text-guard",
+      "layer": "L2-virtual",
+      "description": "Empty text returns empty string without SSH call",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-text-too-long-guard",
+      "layer": "L2-virtual",
+      "description": "Text exceeding max_text_len returns original without SSH call",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-hallucination-guard",
+      "layer": "L2-virtual",
+      "description": "Output > 5x input length is rejected, original text returned",
+      "passes": false,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-haiku-expand-not-implemented",
+      "layer": "L2-virtual",
+      "description": "Selecting haiku-expand preset raises ValueError with notification",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-preset-structure",
+      "layer": "L2-virtual",
+      "description": "haiku-fix and haiku-expand presets have correct structure and required fields",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-vertex-preset-structure",
+      "layer": "L2-virtual",
+      "description": "gemini-fix preset has correct structure: framework=vertex-ai, model, vertex_region, prompt files",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-vertex-empty-text-guard",
+      "layer": "L2-virtual",
+      "description": "process_with_vertex_ai returns empty string for empty input without SSH call",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-vertex-text-too-long-guard",
+      "layer": "L2-virtual",
+      "description": "process_with_vertex_ai returns original for text exceeding max_text_len",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "virtual-vertex-hallucination-guard",
+      "layer": "L2-virtual",
+      "description": "process_with_vertex_ai rejects output > 5x input length, returns original",
+      "passes": true,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "real-chain-vertex-correction",
+      "layer": "L2-real",
+      "description": "Send known-error text via real SSH+Vertex AI proxy, verify corrected output",
+      "passes": false,
+      "last_error": null,
+      "blocking": false
+    },
+    {
+      "id": "real-chain-vertex-vocab-roundtrip",
+      "layer": "L2-real",
+      "description": "Full vocab cycle with real Vertex AI: apply_vocab -> process -> diff_to_vocab -> save_vocab",
+      "passes": false,
+      "last_error": null,
+      "blocking": false
+    }
+  ]
+}
