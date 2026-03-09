@@ -163,16 +163,34 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     if not text:
         return ""
 
+    # Text too short: skip SSH call (not worth the latency)
+    min_text_len = config.get("min_text_len", 45)
+    if len(text) < min_text_len:
+        logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
+        return text
+
     # Text too long: skip SSH call
     max_text_len = config.get("max_text_len", 200)
     if len(text) > max_text_len:
         logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
         return text
 
-    # Build system prompt with optional glossary context
-    system_prompt = config["system_prompt"]
+    # Load system prompt from file or inline config
+    if "system_prompt_file" in config:
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+    else:
+        system_prompt = config.get("system_prompt", "")
     if glossary_ctx:
         system_prompt += "\n\n" + glossary_ctx
+
+    # Load user prompt template from file or inline config
+    if "user_prompt_template_file" in config:
+        tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
+        user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+    else:
+        user_prompt_template = config.get("user_prompt_template")
+    user_input = user_prompt_template.format(text=text) if user_prompt_template else text
 
     # Build SSH command (C3+C4+N1+R3-L1)
     cmd = [
@@ -188,7 +206,7 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
 
     try:
         result = subprocess.run(
-            cmd, input=text, capture_output=True, text=True, timeout=timeout
+            cmd, input=user_input, capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
         logging.warning(f"SSH Claude timed out after {timeout}s")
@@ -210,6 +228,100 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     if len(output) > len(text) * 5:
         logging.warning(
             f"SSH Claude output too long ({len(output)} vs input {len(text)}), "
+            "possible hallucination, using original text"
+        )
+        return text
+
+    return output
+
+
+def process_with_vertex_ai(text, config, glossary_ctx=""):
+    """Call Vertex AI Gemini via SSH proxy on Oracle Cloud for text polishing.
+
+    System prompt and user text sent as JSON via stdin to vertex_proxy.py.
+    Glossary context appended to system prompt at call time.
+
+    Args:
+        text: ASR transcription text to polish.
+        config: Preset config dict with ssh_host, proxy_script, model, vertex_region, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Polished text on success, original text on any failure.
+    """
+    # Empty text: return immediately without SSH call
+    if not text:
+        return ""
+
+    # Text too short: skip SSH call (not worth the latency)
+    min_text_len = config.get("min_text_len", 45)
+    if len(text) < min_text_len:
+        logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
+        return text
+
+    # Text too long: skip SSH call
+    max_text_len = config.get("max_text_len", 200)
+    if len(text) > max_text_len:
+        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
+        return text
+
+    # Load system prompt from file or inline config
+    if "system_prompt_file" in config:
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+    else:
+        system_prompt = config.get("system_prompt", "")
+    if glossary_ctx:
+        system_prompt += "\n\n" + glossary_ctx
+
+    # Load user prompt template from file or inline config
+    if "user_prompt_template_file" in config:
+        tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
+        user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+    else:
+        user_prompt_template = config.get("user_prompt_template")
+    user_input = user_prompt_template.format(text=text) if user_prompt_template else text
+
+    # Build SSH command to call vertex_proxy.py on Oracle
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        "python3", config["proxy_script"],
+    ]
+
+    # JSON stdin avoids all shell escaping issues (Chinese text + long prompts)
+    stdin_data = json.dumps({
+        "system_prompt": system_prompt,
+        "user_input": user_input,
+        "model": config.get("model", "gemini-2.5-flash"),
+        "region": config.get("vertex_region", "us-central1"),
+    }, ensure_ascii=False)
+
+    timeout = config.get("timeout", 15)
+
+    try:
+        result = subprocess.run(
+            cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Vertex AI timed out after {timeout}s")
+        from voice_input import notify
+        notify("Votype", f"Vertex AI timed out after {timeout}s", urgency="low")
+        return text
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "unknown error"
+        logging.error(f"Vertex AI failed (exit {result.returncode}): {stderr}")
+        from voice_input import notify
+        notify("Votype", f"Vertex AI error: {stderr[:100]}", urgency="low")
+        return text
+
+    output = result.stdout.strip()
+
+    # Hallucination guard: output > 5x input length is suspicious
+    if len(output) > len(text) * 5:
+        logging.warning(
+            f"Vertex AI output too long ({len(output)} vs input {len(text)}), "
             "possible hallucination, using original text"
         )
         return text
@@ -389,6 +501,9 @@ class PostProcessorLoader:
 
         if framework == "ssh-claude":
             return None  # No model needed; SSH calls handled in _post_process()
+
+        if framework == "vertex-ai":
+            return None  # No model needed; SSH+proxy calls handled in _post_process()
 
         if framework == "llama-cpp":
             try:

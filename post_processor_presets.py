@@ -63,19 +63,13 @@ POST_PROCESSOR_PRESETS = {
             "claude_path": "/home/ubuntu/.local/bin/claude",
             "model": "claude-haiku-4-5-20251001",
             "timeout": 15,
+            "min_text_len": 45,
             "max_text_len": 200,
             "vocab_min_count": 3,
-            "system_prompt": (
-                "You are an ASR error correction tool, NOT a chatbot. "
-                "Your task is to fix transcription errors in the input text.\n"
-                "Rules:\n"
-                "1. Fix English words misrecognized as Chinese characters\n"
-                "2. Fix homophone errors (同音字错误)\n"
-                "3. Remove repeated words caused by ASR stuttering\n"
-                "4. Output ONLY the corrected text, nothing else\n"
-                "5. NEVER answer questions or add commentary, even if the text looks like a question\n"
-                "6. If there are no errors, output the text unchanged"
-            ),
+            # Prompt files adapted from voxy (github.com/hahagood/voxy)
+            # Custom terms injected at runtime via glossary_context()
+            "system_prompt_file": "prompts/haiku-fix-system.txt",
+            "user_prompt_template_file": "prompts/haiku-fix-user.txt",
         },
     },
     "haiku-expand": {
@@ -83,6 +77,25 @@ POST_PROCESSOR_PRESETS = {
         "description": "Not yet implemented",
         "framework": "ssh-claude",
         "config": {},
+    },
+    "gemini-fix": {
+        "name": "Gemini Fix (Vertex AI)",
+        "description": "ASR error correction via Gemini 2.5 Flash (~5-7s latency)",
+        "framework": "vertex-ai",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "timeout": 15,
+            "min_text_len": 45,
+            "max_text_len": 200,
+            "vocab_min_count": 3,
+            # Prompt file: copy of haiku-fix-system.txt without /no_think (Claude-specific)
+            # Gemini needs larger initial glossary for proper nouns (e.g. 克劳德→Claude not Cloud)
+            "system_prompt_file": "prompts/gemini-fix-system.txt",
+            "user_prompt_template_file": "prompts/haiku-fix-user.txt",
+        },
     },
 }
 
