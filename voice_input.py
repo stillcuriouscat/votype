@@ -58,6 +58,7 @@ AUDIO_PATH_FILE = CONFIG_DIR / "recording_path.txt"  # Stores current recording 
 DAEMON_PID_FILE = CONFIG_DIR / "daemon.pid"
 DAEMON_LOCK_FILE = CONFIG_DIR / "daemon.lock"
 SOCKET_PATH = CONFIG_DIR / "daemon.sock"
+PROCESSING_FILE = CONFIG_DIR / "processing.flag"
 
 # Recording parameters
 SAMPLE_RATE = 16000
@@ -312,7 +313,11 @@ def stop_recording():
         notify("⚠️ Voice Input", "Abnormal state: no recording in progress", "critical")
         return
 
-    # Notify the daemon to update icon status (show processing)
+    # Mark processing state immediately — prevents concurrent toggle from starting new recording
+    PROCESSING_FILE.write_text(str(os.getpid()))
+    _log_to_notify_file("processing started (recording stopped, transcription pending)")
+
+    # Notify the daemon to update icon status (show processing/orange)
     daemon_running = is_daemon_running()
     if daemon_running:
         send_to_daemon("recording_stop")
@@ -339,6 +344,7 @@ def stop_recording():
         audio_file = AUDIO_FILE
 
     if not audio_file.exists():
+        PROCESSING_FILE.unlink(missing_ok=True)
         if daemon_running:
             send_to_daemon("set_idle")
         notify("❌ Voice Input", "Recording file not found", "critical")
@@ -347,7 +353,6 @@ def stop_recording():
     # If the daemon is running, use it for transcription
     if daemon_running:
         response = send_to_daemon("transcribe", str(audio_file))
-        # The daemon automatically sets idle status after transcription completes
         if response and "text" in response:
             text = response["text"]
             if text:
@@ -357,9 +362,15 @@ def stop_recording():
             error = response.get("error", "Unknown error") if response else "Daemon not responding"
             notify("❌ Voice Input", f"Transcription failed: {error}", "critical")
             # On failure, the current recording is preserved for recovery
+        # Set idle AFTER text has been pasted (icon stays orange during entire pipeline)
+        send_to_daemon("set_idle")
     else:
         # No daemon is an abnormal situation (normally toggle starts the daemon first)
         notify("❌ Voice Input", "Service error\nRun voice-input daemon to start\nor check /tmp/voice-input-daemon.log", "critical")
+
+    # Clear processing flag — allows new recordings
+    PROCESSING_FILE.unlink(missing_ok=True)
+    _log_to_notify_file("processing complete")
 
     # Always clean up old recordings (>2h), regardless of transcription result
     _cleanup_old_recordings()
@@ -513,6 +524,22 @@ def _log_to_notify_file(msg):
 def toggle_recording():
     """Toggle recording state."""
     _log_to_notify_file("toggle_recording() called")
+
+    # Check if processing is in progress (ASR/Gemini/pasting)
+    if PROCESSING_FILE.exists():
+        try:
+            age = time.time() - PROCESSING_FILE.stat().st_mtime
+            if age < 120:
+                _log_to_notify_file(f"processing in progress ({age:.1f}s), ignoring toggle")
+                notify("⏳ Voice Input", "Processing in progress, please wait...")
+                return
+            else:
+                _log_to_notify_file(f"stale processing flag ({age:.1f}s), cleaning up")
+                PROCESSING_FILE.unlink(missing_ok=True)
+                if is_daemon_running():
+                    send_to_daemon("set_idle")
+        except OSError:
+            pass
 
     # Check whether the daemon is truly ready
     if not is_daemon_ready():
@@ -860,7 +887,8 @@ class ASRDaemon:
         # Step 3: SSH-based post-processing (glossary regex + LLM polish + vocab accumulation)
         if result and self.post_processor_framework in ("ssh-claude", "vertex-ai"):
             from post_processor_configs import (
-                apply_vocab, glossary_context, process_with_ssh_claude,
+                apply_vocab, glossary_context, load_vocab,
+                process_with_ssh_claude,
                 process_with_vertex_ai, diff_to_vocab, save_vocab,
             )
             # Dispatch dict defined AFTER import (CRITIC-R7-C1)
@@ -885,6 +913,8 @@ class ASRDaemon:
             if before_polish != result:
                 self._vocab = diff_to_vocab(before_polish, result, self._vocab)
                 save_vocab(self._vocab)
+                # Reload merged vocab (save_vocab merges with disk)
+                self._vocab = load_vocab()
 
         # Step 4: Optional LLM post-processing
         if result and self.post_processor_model is not None:
@@ -925,7 +955,12 @@ class ASRDaemon:
             return {"error": str(e)}
     
     def _handle_transcribe(self, msg):
-        """Handle transcription request"""
+        """Handle transcription request.
+
+        Note: does NOT set idle status — the CLI process sends set_idle
+        after type_text() completes, so the icon stays orange during the
+        entire pipeline (ASR → post-process → paste).
+        """
         self.set_status("processing")
         response = self.transcribe(msg.get("data"))
         if response and "text" in response and response["text"]:
@@ -933,7 +968,6 @@ class ASRDaemon:
             response["text"] = self._post_process(response["text"])
         elif response and "error" in response:
             _log("ASR", f"error: {response['error']}")
-        self.set_status("idle")
         return response
 
     def _handle_stop(self, msg):
