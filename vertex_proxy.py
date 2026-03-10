@@ -39,8 +39,8 @@ def _import_genai():
         ImportError: If google-genai is not installed.
     """
     from google import genai
-    from google.genai.types import GenerateContentConfig
-    return genai, GenerateContentConfig
+    from google.genai.types import GenerateContentConfig, ThinkingConfig
+    return genai, GenerateContentConfig, ThinkingConfig
 
 
 def print_help():
@@ -122,7 +122,7 @@ def main():
 
     # Import SDK (lazy to allow --help without SDK installed)
     try:
-        genai, GenerateContentConfig = _import_genai()
+        genai, GenerateContentConfig, ThinkingConfig = _import_genai()
     except ImportError as e:
         print(f"google-genai SDK not installed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -134,22 +134,24 @@ def main():
         location=region,
     )
 
-    # Call Gemini (CRITIC-R8-M1: system_prompt -> system_instruction, user_input -> contents)
+    # Call Gemini (thinking disabled via thinking_budget=0 for low latency)
+    config = GenerateContentConfig(
+        system_instruction=system_prompt,
+        thinking_config=ThinkingConfig(thinking_budget=0),
+        temperature=0.3,
+        max_output_tokens=512,
+    )
+
     try:
         response = client.models.generate_content(
             model=model,
             contents=user_input,
-            config=GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.3,
-                max_output_tokens=512,
-            ),
+            config=config,
         )
     except Exception as e:
         print(f"Gemini API error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Guard response.text is None (CRITIC-R7-M2)
     if response.text is None:
         print("Gemini returned empty response (response.text is None)", file=sys.stderr)
         sys.exit(1)

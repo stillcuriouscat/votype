@@ -400,6 +400,10 @@ def diff_to_vocab(original, polished, vocab):
         if not error or not correct:
             continue
 
+        # Skip single-char corrections — too unreliable for CJK
+        if len(correct) <= 1 or len(error) <= 1:
+            continue
+
         if correct in new_vocab:
             old_variants = new_vocab[correct]["variants"]
             new_vocab[correct] = {
@@ -412,20 +416,36 @@ def diff_to_vocab(original, polished, vocab):
 
 
 def save_vocab(vocab, vocab_path=None):
-    """Save vocab dict to JSON file atomically.
+    """Save vocab dict to JSON file atomically, merging with on-disk data.
 
-    Writes to .tmp file first, then renames (atomic on same filesystem).
-    Uses Path.rename() per CRITIC-R4-L1.
+    Reads current file first to preserve entries added externally (e.g. glossary
+    terms added by scripts while daemon is running). Merges variant counts
+    additively, then writes atomically via .tmp rename.
 
     Args:
-        vocab: Vocab dict to save.
+        vocab: Vocab dict from daemon memory.
         vocab_path: Optional path override (for testing). Defaults to VOCAB_PATH.
     """
     path = Path(vocab_path) if vocab_path else VOCAB_PATH
+
+    # Merge with on-disk vocab to preserve externally-added entries
+    disk_vocab = load_vocab(str(path))
+    merged = copy.deepcopy(disk_vocab)
+    for term, data in vocab.items():
+        if term in merged:
+            # Merge variants: keep max count for each variant
+            existing_variants = merged[term].get("variants", {})
+            new_variants = data.get("variants", {})
+            for variant, count in new_variants.items():
+                existing_variants[variant] = max(existing_variants.get(variant, 0), count)
+            merged[term] = {"variants": existing_variants}
+        else:
+            merged[term] = copy.deepcopy(data)
+
     tmp_path = path.with_suffix('.tmp')
 
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(vocab, f, ensure_ascii=False, indent=2)
+        json.dump(merged, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
     tmp_path.rename(path)
