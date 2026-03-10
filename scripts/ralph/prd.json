@@ -1,7 +1,7 @@
 {
   "project": "Votype",
   "branchName": "ralph/ssh-haiku-polish",
-  "description": "Add SSH-based text polishing via Claude Haiku CLI on Oracle server. Pipeline: ASR -> regex -> FireRedPunc -> glossary regex -> SSH Haiku fix -> vocab accumulation -> output. Glossary provides dual-use: regex replacement (offline) and Haiku prompt context (online).",
+  "description": "Add SSH-based text polishing via Claude Haiku CLI on Oracle server, plus Vertex AI Gemini Flash as faster alternative. Pipeline: ASR -> regex -> FireRedPunc -> glossary regex -> LLM fix (haiku-fix or gemini-fix) -> vocab accumulation -> output. Glossary provides dual-use: regex replacement (offline) and LLM prompt context (online).",
   "userStories": [
     {
       "id": "US-001",
@@ -120,6 +120,93 @@
       "priority": 6,
       "passes": true,
       "notes": "Do NOT auto-modify ~/.ssh/config. Document the recommended config and let user add it manually."
+    },
+    {
+      "id": "US-007",
+      "title": "Create vertex_proxy.py using google-genai SDK on Oracle",
+      "description": "Single-file Python script deployed on Oracle Cloud (~/) that reads JSON from stdin and calls Vertex AI Gemini 2.5 Flash. Uses google-genai SDK (NOT deprecated vertexai SDK) with ADC authentication.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-C1: Must use `google-genai` SDK (`from google import genai`), NOT deprecated `vertexai.generative_models` (removed June 2026)",
+        "CRITIC-R6-C2: Must specify Vertex AI region/location (us-central1) — gcloud has no default region on Oracle",
+        "Reads JSON from stdin: {\"system_prompt\": \"...\", \"user_input\": \"...\", \"model\": \"...\", \"region\": \"...\"}",
+        "CRITIC-R8-M1: JSON stdin 'system_prompt' maps to SDK param 'system_instruction' in GenerateContentConfig; 'user_input' maps to 'contents' in generate_content() — document this mapping explicitly",
+        "Calls Gemini via genai.Client(vertexai=True, project=PROJECT, location=region)",
+        "Uses ADC (Application Default Credentials) — already configured on Oracle",
+        "temperature=0.3, max_output_tokens=512 (consistent with voxy reference)",
+        "Writes corrected text to stdout (plain text, no JSON wrapping)",
+        "Exit 0 = success, exit 1 = failure (stderr has error message)",
+        "No streaming (simple request-response)",
+        "Script is self-contained — no imports from voice_input project",
+        "Tests: vertex_proxy.py --help or --test mode verifies SDK import + auth without API call",
+        "CRITIC-R7-M2: Guard response.text is None — print error to stderr and exit 1, not output 'None' string",
+        "CRITIC-R7-M3: Suppress Python warnings (`import warnings; warnings.filterwarnings('ignore')`) before any google imports to prevent stderr pollution hiding real errors"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "google-genai v1.66.0 already installed on Oracle as transitive dep. GCP project: project-9cd34e60-a50d-406f-ae4. Oracle: Ubuntu 22.04, Python 3.10, ARM64."
+    },
+    {
+      "id": "US-008",
+      "title": "Add gemini-fix preset and process_with_vertex_ai to post_processor",
+      "description": "Add gemini-fix preset to post_processor_presets.py and process_with_vertex_ai() function to post_processor_configs.py. Must use separate prompt file without Claude-specific directives.",
+      "acceptanceCriteria": [
+        "CRITIC-R8-C1: Insert gemini-fix preset BEFORE the dict closing brace (before line 81), NOT after it — line 81 is POST_PROCESSOR_PRESETS closing }, line 80 is haiku-expand closing },",
+        "gemini-fix preset includes: framework='vertex-ai', model='gemini-2.5-flash', vertex_region='us-central1'",
+        "CRITIC-R6-L1: Preset config has explicit 'model' field (consistent with haiku-fix pattern)",
+        "CRITIC-R6-M2: Uses separate prompt file 'prompts/gemini-fix-system.txt' without /no_think (Claude-specific)",
+        "prompts/gemini-fix-system.txt is copy of haiku-fix-system.txt with /no_think removed",
+        "CRITIC-R7-M1: Prompt files are COPIES in install dir (not symlinks) — deploy gemini-fix-system.txt by copying to ~/.local/share/voice-input/prompts/, matching existing prompt deployment pattern",
+        "CRITIC-R6-M1: Documentation/comments state realistic latency 5-7s (not 2-4s)",
+        "process_with_vertex_ai() has same interface as process_with_ssh_claude(text, config, glossary_ctx)",
+        "Same guards: empty text, min_text_len=45, max_text_len=200, hallucination guard (5x)",
+        "SSH command: ssh oracle-cloud python3 ~/vertex_proxy.py",
+        "stdin: JSON with system_prompt, user_input, model, region from config",
+        "CRITIC-R6-M4: Document that Gemini needs larger initial glossary for proper nouns vs Haiku",
+        "Error handling: timeout -> original, non-zero -> original, hallucination -> original",
+        "PostProcessorLoader.load_post_processor() returns None for framework='vertex-ai'",
+        "Existing haiku-fix preset and process_with_ssh_claude() UNCHANGED",
+        "Tests pass"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "CRITIC-R6-M4: Gemini interprets '克劳德' as 'Cloud' not 'Claude'. Seeding vocab.json with known terms recommended."
+    },
+    {
+      "id": "US-009",
+      "title": "Integrate vertex-ai framework into ASRDaemon pipeline",
+      "description": "Wire vertex-ai framework into _post_process() and load_post_processor(). Reduce code duplication with ssh-claude by extracting shared pipeline logic.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-L2: Extract shared pipeline (apply_vocab -> process -> diff_to_vocab -> save_vocab) to avoid duplication",
+        "Use dispatch dict or helper function: {\"ssh-claude\": process_with_ssh_claude, \"vertex-ai\": process_with_vertex_ai}",
+        "CRITIC-R7-C1: Dispatch dict MUST be defined AFTER import — define inline dict after `from post_processor_configs import ...`, not before. Use `in ('ssh-claude', 'vertex-ai')` for the if-condition, then build dict inside the block",
+        "ASRDaemon._post_process() handles framework='vertex-ai' with same pipeline as ssh-claude",
+        "ASRDaemon.load_post_processor() loads vocab for vertex-ai same as ssh-claude",
+        "Switching via CLI 'voice-input post-processor gemini-fix' works",
+        "Existing ssh-claude/haiku-fix pipeline behavior UNCHANGED",
+        "Tests pass"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Both frameworks follow identical pipeline: apply_vocab -> process_with_X -> diff_to_vocab -> save_vocab. Only the process function differs."
+    },
+    {
+      "id": "US-010",
+      "title": "Add tests and deploy vertex_proxy.py to Oracle",
+      "description": "Add automated tests for the Vertex AI integration and deploy vertex_proxy.py to Oracle. Include L2 Virtual tests (guards, JSON construction) and L2 Real SSH test.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-L3: L2 Virtual tests for process_with_vertex_ai guards (min_text_len, max_text_len, hallucination, empty text)",
+        "L2 Virtual tests for JSON construction (system_prompt, user_input, model, region fields)",
+        "L2 Real SSH test: ssh oracle-cloud python3 ~/vertex_proxy.py with test input",
+        "Unit tests for vertex_proxy.py (mock genai client, test error handling)",
+        "Existing haiku-fix tests pass unchanged (regression)",
+        "vertex_proxy.py deployed to Oracle via scp",
+        "CRITIC-R7-L1: Verify `from google import genai` works on Oracle (google-genai already installed as transitive dep, no separate pip install needed)",
+        "CRITIC-R6-L4: Document Python 3.10 EOL Oct 2026 in Risk Assessment",
+        "Tests pass"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Oracle pip install google-cloud-aiplatform already done during R6 verification. Python 3.10 support until Oct 2026."
     }
   ]
 }

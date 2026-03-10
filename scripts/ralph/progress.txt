@@ -9,6 +9,7 @@ Started: Sat 07 Mar 2026 05:23:21 PM CST
 - English regex in mixed CJK text: use `(?<![a-zA-Z])` / `(?![a-zA-Z])` instead of `\b` — Python treats CJK as `\w` so `\b` fails at CJK-English boundaries
 - New module-level functions (load_vocab, apply_vocab, etc.) go before PostProcessorLoader class, after regex patterns
 - Lazy import `from voice_input import notify` inside function body to avoid circular deps; mock target = `voice_input.notify`
+- Lazy imports inside methods create LOCAL names — mock at the SOURCE module (e.g., `post_processor_configs.apply_vocab`), not the consuming module
 ---
 
 ## 2026-03-08 - US-001
@@ -42,4 +43,109 @@ Started: Sat 07 Mar 2026 05:23:21 PM CST
   - notify() is lazily imported inside function body (`from voice_input import notify`) to avoid circular dependency — test mocking must target `voice_input.notify`, NOT `post_processor_configs.notify`
   - shlex.quote() protects system_prompt from SSH remote shell word-splitting (subprocess list bypasses local shell, but SSH concatenates args on remote)
   - subprocess.run with list args + input=text avoids all shell escaping issues for ASR text
+---
+
+## 2026-03-08 - US-004
+- Added diff_to_vocab(), save_vocab(), _tokenize_for_diff(), _join_tokens() to post_processor_configs.py
+- Added import copy, difflib, Path for immutable deepcopy, sequence matching, and atomic file ops
+- Created tests/test_diff_vocab.py (36 tests, all passing)
+- Files changed: post_processor_configs.py, tests/test_diff_vocab.py
+- **Learnings for future iterations:**
+  - _tokenize_for_diff uses `[\u4e00-\u9fff]|[a-zA-Z]+` to split Chinese chars individually while keeping English words together
+  - _join_tokens: Chinese-Chinese = no separator, English-English = space, Mixed = no separator (adjacent concat)
+  - diff_to_vocab only processes 'replace' opcodes from SequenceMatcher — 'insert' and 'delete' are not useful for vocab accumulation
+  - copy.deepcopy(vocab) ensures immutability — new vocab dict returned, input never mutated
+  - save_vocab uses Path.rename() for atomic write (no os.rename needed since VOCAB_PATH is already a Path)
+---
+
+## 2026-03-08 - US-005
+- Integrated ssh-claude framework into ASRDaemon pipeline
+- PostProcessorLoader.load_post_processor() returns None for framework='ssh-claude'
+- haiku-expand guard placed BEFORE try block (CRITIC-R4-C1) — raises ValueError that propagates to daemon handler
+- haiku-expand sends "not implemented" notification, no contradictory success notification (CRITIC-R3-L2)
+- Vocab loaded once in load_post_processor() and cached as self._vocab
+- _post_process() pipeline: regex fillers → auto-punctuation → glossary regex → SSH Haiku → vocab accumulation → LLM
+- Created tests/test_integration_ssh_claude.py (19 tests, all passing)
+- Files changed: post_processor_configs.py, voice_input.py, tests/test_integration_ssh_claude.py
+- **Learnings for future iterations:**
+  - Lazy imports inside _post_process() create local names — must mock at post_processor_configs module level, not voice_input module level
+  - haiku-expand detection: check `preset.get("config")` emptiness (empty dict = not implemented)
+  - The inner except in load_post_processor() catches all exceptions; to propagate errors, checks must be placed BEFORE the try block
+---
+
+## 2026-03-08 - US-006
+- Added SSH ControlMaster documentation to README.md (ControlMaster auto, ControlPath, ControlPersist 600)
+- Added haiku-fix post-processor documentation section
+- Updated CLI command examples to list haiku-fix
+- Verified voice-input status already shows post-processor name (get_post_processor command)
+- Created tests/test_ssh_controlmaster_docs.py (8 tests, all passing)
+- Files changed: README.md, tests/test_ssh_controlmaster_docs.py
+- **Learnings for future iterations:**
+  - show_status() already queries get_post_processor and displays post-processor name — no code change needed
+  - README tests verify content presence, useful for documentation-focused stories
+---
+
+## 2026-03-08 - E2E Test Fixes (post US-006)
+- Fixed test_e2e_virtual_ssh.py: diff_to_vocab no-change test used `is` (identity) but implementation returns deepcopy (correct per immutability contract); changed to `== / is not`
+- Fixed test_e2e_ssh_chain.py: test_vocab_roundtrip took (original, polished) as params — pytest treated them as missing fixtures; added module-scoped fixture wrapping test_ssh_correction
+- All E2E tests pass: 27 virtual + 3 SSH chain = 30 total
+- L1 Real E2E (test_e2e_ssh_haiku.py) requires daemon+Kitty+audio — manual testing only
+- **Learnings for future iterations:**
+  - E2E test scripts designed for `__main__` sequential chaining need pytest fixtures for inter-test data flow
+  - `assert x is y` checks identity, `assert x == y` checks equality — deepcopy always returns new object
+---
+
+## 2026-03-09 - US-007
+- Created vertex_proxy.py: self-contained Vertex AI Gemini proxy script for Oracle Cloud
+- Reads JSON from stdin (system_prompt, user_input, model, region), calls Gemini 2.5 Flash
+- Uses google-genai SDK: genai.Client(vertexai=True) with ADC authentication
+- SDK param mapping: JSON "system_prompt" → SDK "system_instruction", JSON "user_input" → SDK "contents"
+- Lazy SDK imports: --help works without google-genai installed, --test validates ADC via models.list()
+- Guards: response.text None → stderr + exit 1, missing user_input, invalid JSON, unknown args
+- warnings.filterwarnings('ignore') before google imports to suppress stderr pollution
+- Files changed: vertex_proxy.py (new)
+- **Learnings for future iterations:**
+  - google-genai SDK is not installed locally (only on Oracle) — must use lazy imports for any flags that should work without SDK
+  - genai.Client() init is lazy (succeeds even with expired credentials) — use client.models.list() for true ADC validation
+  - 16 pre-existing test failures from uncommitted prompt migration (system_prompt → system_prompt_file) — not related to US-007
+---
+
+## 2026-03-09 - US-008
+- Added gemini-fix preset to post_processor_presets.py (framework=vertex-ai, Gemini 2.5 Flash)
+- Created prompts/gemini-fix-system.txt (copy of haiku-fix without /no_think)
+- Added process_with_vertex_ai() to post_processor_configs.py — same interface and guards as process_with_ssh_claude()
+- Uses JSON stdin to vertex_proxy.py (avoids shell escaping issues unlike haiku-fix CLI args)
+- PostProcessorLoader returns None for framework='vertex-ai'
+- Files changed: post_processor_presets.py, post_processor_configs.py, prompts/gemini-fix-system.txt (new)
+- **Learnings for future iterations:**
+  - JSON stdin is cleaner than CLI args for passing Chinese text + long prompts (no shlex.quote needed)
+  - Prompt files already existed in install dir from previous adversarial review testing
+  - gemini-fix shares user_prompt_template_file with haiku-fix (prompts/haiku-fix-user.txt)
+---
+
+## 2026-03-09 - US-009
+- Extended vocab loading in load_post_processor() to handle vertex-ai framework
+- Refactored _post_process() with dispatch dict: {"ssh-claude": process_with_ssh_claude, "vertex-ai": process_with_vertex_ai}
+- Dispatch dict defined AFTER import (CRITIC-R7-C1) to avoid NameError
+- Updated docstring to mention vertex-ai alongside ssh-claude
+- Files changed: voice_input.py
+- **Learnings for future iterations:**
+  - Dispatch dict pattern eliminates code duplication for frameworks sharing identical pipelines
+  - Dict must be defined AFTER the import block, not before (CRITIC-R7-C1)
+  - `in ("ssh-claude", "vertex-ai")` for if-condition, then dict inside the block
+---
+
+## 2026-03-09 - US-010
+- Created tests/test_vertex_ai.py: 22 tests (unit guards, JSON stdin, command construction, hallucination, preset, integration dispatch)
+- Added 8 virtual E2E tests to test_e2e_virtual_ssh.py (vertex preset structure, guards, hallucination)
+- Created tests/test_e2e_vertex_chain.py: L2 Real SSH test (correction + vocab roundtrip)
+- Updated e2e_features.json: 7 new feature entries
+- Deployed vertex_proxy.py to Oracle via scp, verified SDK import (google-genai 1.66.0)
+- Total test results: 134 passed, 1 pre-existing failure (system_prompt→system_prompt_file migration)
+- Files changed: tests/test_vertex_ai.py (new), tests/test_e2e_virtual_ssh.py, tests/test_e2e_vertex_chain.py (new), tests/e2e_features.json
+- **Learnings for future iterations:**
+  - RequestsDependencyWarning on Oracle confirms warnings.filterwarnings('ignore') is essential
+  - L2 Real tests need higher timeout (20s) for Vertex AI cold start
+  - Test min_text_len: input text must be >= min_text_len for SSH to fire (use "a" * 50)
+  - Python 3.10 EOL Oct 2026 — plan Ubuntu 24.04 upgrade
 ---
