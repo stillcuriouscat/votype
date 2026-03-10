@@ -8,8 +8,11 @@ Pipeline: ASR -> regex filler removal (always) -> auto-punctuation (model-specif
 
 from pathlib import Path
 
+# Base data directory for voice-input
+VOICE_INPUT_DATA_DIR = Path.home() / ".local/share/voice-input"
+
 # Directory for GGUF model files
-MODELS_DIR = Path.home() / ".local/share/voice-input/models"
+MODELS_DIR = VOICE_INPUT_DATA_DIR / "models"
 
 # Post-processor preset configurations
 POST_PROCESSOR_PRESETS = {
@@ -49,6 +52,49 @@ POST_PROCESSOR_PRESETS = {
             "prompt_template": "请修正以下语音转录文本中的错别字和语法错误，只输出修正后的文本：\n{text}",
             "n_ctx": 2048,
             "n_gpu_layers": 0,  # CPU-only: ASR model occupies all GPU VRAM
+        },
+    },
+    "haiku-fix": {
+        "name": "Haiku Fix (SSH)",
+        "description": "ASR error correction via Claude Haiku on remote server",
+        "framework": "ssh-claude",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "claude_path": "/home/ubuntu/.local/bin/claude",
+            "model": "claude-haiku-4-5-20251001",
+            "timeout": 15,
+            "min_text_len": 45,
+            "max_text_len": 200,
+            "vocab_min_count": 3,
+            # Prompt files adapted from voxy (github.com/hahagood/voxy)
+            # Custom terms injected at runtime via glossary_context()
+            "system_prompt_file": "prompts/haiku-fix-system.txt",
+            "user_prompt_template_file": "prompts/haiku-fix-user.txt",
+        },
+    },
+    "haiku-expand": {
+        "name": "Haiku Expand (placeholder)",
+        "description": "Not yet implemented",
+        "framework": "ssh-claude",
+        "config": {},
+    },
+    "gemini-fix": {
+        "name": "Gemini Fix (Vertex AI)",
+        "description": "ASR error correction via Gemini 2.5 Flash (~5-7s latency)",
+        "framework": "vertex-ai",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "timeout": 15,
+            "min_text_len": 45,
+            "max_text_len": 200,
+            "vocab_min_count": 3,
+            # Prompt file: copy of haiku-fix-system.txt without /no_think (Claude-specific)
+            # Gemini needs larger initial glossary for proper nouns (e.g. 克劳德→Claude not Cloud)
+            "system_prompt_file": "prompts/gemini-fix-system.txt",
+            "user_prompt_template_file": "prompts/haiku-fix-user.txt",
         },
     },
 }

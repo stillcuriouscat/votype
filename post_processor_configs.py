@@ -6,11 +6,21 @@ Configuration is imported from post_processor_presets.py.
 Pipeline: regex filler removal (always) -> LLM refinement (optional)
 """
 
+import copy
+import difflib
+import json
 import re
 import logging
+import shlex
+import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
-from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
+from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR, VOICE_INPUT_DATA_DIR
+
+
+# Vocab file path — derived from shared VOICE_INPUT_DATA_DIR constant
+VOCAB_PATH = VOICE_INPUT_DATA_DIR / "vocab.json"
 
 
 # Regex patterns for filler words (Chinese + English)
@@ -40,6 +50,405 @@ ENGLISH_FILLER_PATTERN = re.compile(
 REPEATED_PUNCT_PATTERN = re.compile(r'[，,、]{2,}')
 # Pattern for leading punctuation
 LEADING_PUNCT_PATTERN = re.compile(r'^[，,、\s]+')
+
+
+def load_vocab(vocab_path=None):
+    """Load glossary vocab from JSON file.
+
+    Vocab format: {"correct_term": {"variants": {"error_form": count, ...}}, ...}
+
+    Args:
+        vocab_path: Path to vocab.json. Defaults to VOCAB_PATH.
+
+    Returns:
+        dict: Vocab dictionary, or {} if file missing/invalid.
+    """
+    path = vocab_path or VOCAB_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def apply_vocab(text, vocab, min_count):
+    """Replace known ASR error variants with correct terms.
+
+    Collects all (variant, correct_term) pairs where variant count >= min_count,
+    sorts by variant length descending (longer variants first to handle overlaps),
+    then applies regex replacements.
+
+    Chinese variants: no word boundary (direct substring replacement).
+    English variants: word boundary + case-insensitive matching.
+
+    Args:
+        text: Input text to fix.
+        vocab: Vocab dict {correct: {variants: {error: count}}}.
+        min_count: Minimum variant count threshold.
+
+    Returns:
+        Text with known error variants replaced.
+    """
+    if not text or not vocab:
+        return text
+
+    # Collect all (variant, correct_term) pairs meeting min_count threshold
+    pairs = []
+    for correct_term, entry in vocab.items():
+        variants = entry.get("variants", {})
+        for variant, count in variants.items():
+            if count >= min_count:
+                pairs.append((variant, correct_term))
+
+    if not pairs:
+        return text
+
+    # Sort by variant length descending — longer variants first (R2-M1)
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+
+    result = text
+    for variant, correct_term in pairs:
+        # Detect if variant is Chinese (contains CJK characters)
+        if re.search(r'[\u4e00-\u9fff]', variant):
+            # Chinese: no word boundary
+            pattern = re.escape(variant)
+            result = re.sub(pattern, correct_term, result)
+        else:
+            # English: ASCII letter boundary + case-insensitive (R2-L1)
+            # Use (?<![a-zA-Z]) and (?![a-zA-Z]) instead of \b because
+            # Python treats CJK as \w, so \b won't match at CJK-English boundaries
+            pattern = r'(?<![a-zA-Z])' + re.escape(variant) + r'(?![a-zA-Z])'
+            result = re.sub(pattern, correct_term, result, flags=re.IGNORECASE)
+
+    return result
+
+
+def glossary_context(vocab):
+    """Generate glossary context string for Haiku prompt.
+
+    Lists correct terms from vocab so Haiku can recognize them.
+
+    Args:
+        vocab: Vocab dict {correct: {variants: {error: count}}}.
+
+    Returns:
+        Context string like "Commonly used terms: Ralph, session, Claude Code",
+        or empty string if vocab is empty.
+    """
+    if not vocab:
+        return ""
+
+    terms = list(vocab.keys())
+    return "Commonly used terms: " + ", ".join(terms)
+
+
+def process_with_ssh_claude(text, config, glossary_ctx=""):
+    """Call Claude CLI on remote server via SSH for text polishing.
+
+    System prompt passed via --system-prompt flag, ASR text via stdin.
+    Glossary context appended to system prompt at call time.
+
+    Args:
+        text: ASR transcription text to polish.
+        config: Preset config dict with ssh_host, claude_path, model, timeout, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Polished text on success, original text on any failure.
+    """
+    # Empty text: return immediately without SSH call
+    if not text:
+        return ""
+
+    # Text too short: skip SSH call (not worth the latency)
+    min_text_len = config.get("min_text_len", 45)
+    if len(text) < min_text_len:
+        logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
+        return text
+
+    # Text too long: skip SSH call
+    max_text_len = config.get("max_text_len", 200)
+    if len(text) > max_text_len:
+        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
+        return text
+
+    # Load system prompt from file or inline config
+    if "system_prompt_file" in config:
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+    else:
+        system_prompt = config.get("system_prompt", "")
+    if glossary_ctx:
+        system_prompt += "\n\n" + glossary_ctx
+
+    # Load user prompt template from file or inline config
+    if "user_prompt_template_file" in config:
+        tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
+        user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+    else:
+        user_prompt_template = config.get("user_prompt_template")
+    user_input = user_prompt_template.format(text=text) if user_prompt_template else text
+
+    # Build SSH command (C3+C4+N1+R3-L1)
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        config["claude_path"],
+        "--model", config["model"],
+        "--system-prompt", shlex.quote(system_prompt),
+        "-p",
+    ]
+
+    timeout = config.get("timeout", 15)
+
+    try:
+        result = subprocess.run(
+            cmd, input=user_input, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logging.warning(f"SSH Claude timed out after {timeout}s")
+        # Lazy import to avoid circular dependency
+        from voice_input import notify
+        notify("Votype", f"SSH Claude timed out after {timeout}s", urgency="low")
+        return text
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "unknown error"
+        logging.error(f"SSH Claude failed (exit {result.returncode}): {stderr}")
+        from voice_input import notify
+        notify("Votype", f"SSH Claude error: {stderr[:100]}", urgency="low")
+        return text
+
+    output = result.stdout.strip()
+
+    # Hallucination guard: output > 5x input length is suspicious
+    if len(output) > len(text) * 5:
+        logging.warning(
+            f"SSH Claude output too long ({len(output)} vs input {len(text)}), "
+            "possible hallucination, using original text"
+        )
+        return text
+
+    return output
+
+
+def process_with_vertex_ai(text, config, glossary_ctx=""):
+    """Call Vertex AI Gemini via SSH proxy on Oracle Cloud for text polishing.
+
+    System prompt and user text sent as JSON via stdin to vertex_proxy.py.
+    Glossary context appended to system prompt at call time.
+
+    Args:
+        text: ASR transcription text to polish.
+        config: Preset config dict with ssh_host, proxy_script, model, vertex_region, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Polished text on success, original text on any failure.
+    """
+    # Empty text: return immediately without SSH call
+    if not text:
+        return ""
+
+    # Text too short: skip SSH call (not worth the latency)
+    min_text_len = config.get("min_text_len", 45)
+    if len(text) < min_text_len:
+        logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
+        return text
+
+    # Text too long: skip SSH call
+    max_text_len = config.get("max_text_len", 200)
+    if len(text) > max_text_len:
+        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
+        return text
+
+    # Load system prompt from file or inline config
+    if "system_prompt_file" in config:
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+    else:
+        system_prompt = config.get("system_prompt", "")
+    if glossary_ctx:
+        system_prompt += "\n\n" + glossary_ctx
+
+    # Load user prompt template from file or inline config
+    if "user_prompt_template_file" in config:
+        tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
+        user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+    else:
+        user_prompt_template = config.get("user_prompt_template")
+    user_input = user_prompt_template.format(text=text) if user_prompt_template else text
+
+    # Build SSH command to call vertex_proxy.py on Oracle
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        "python3", config["proxy_script"],
+    ]
+
+    # JSON stdin avoids all shell escaping issues (Chinese text + long prompts)
+    stdin_data = json.dumps({
+        "system_prompt": system_prompt,
+        "user_input": user_input,
+        "model": config.get("model", "gemini-2.5-flash"),
+        "region": config.get("vertex_region", "us-central1"),
+    }, ensure_ascii=False)
+
+    timeout = config.get("timeout", 15)
+
+    try:
+        result = subprocess.run(
+            cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Vertex AI timed out after {timeout}s")
+        from voice_input import notify
+        notify("Votype", f"Vertex AI timed out after {timeout}s", urgency="low")
+        return text
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "unknown error"
+        logging.error(f"Vertex AI failed (exit {result.returncode}): {stderr}")
+        from voice_input import notify
+        notify("Votype", f"Vertex AI error: {stderr[:100]}", urgency="low")
+        return text
+
+    output = result.stdout.strip()
+
+    # Hallucination guard: output > 5x input length is suspicious
+    if len(output) > len(text) * 5:
+        logging.warning(
+            f"Vertex AI output too long ({len(output)} vs input {len(text)}), "
+            "possible hallucination, using original text"
+        )
+        return text
+
+    return output
+
+
+def _tokenize_for_diff(text):
+    """Tokenize text into individual Chinese characters and English words.
+
+    Each CJK character is a separate token; consecutive ASCII letters form one token.
+    Punctuation and whitespace are discarded.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of tokens.
+    """
+    return re.findall(r'[\u4e00-\u9fff]|[a-zA-Z]+', text)
+
+
+def _join_tokens(tokens):
+    """Join tokens back to text.
+
+    Chinese chars joined without separator; English words joined with space.
+
+    Args:
+        tokens: List of tokens (Chinese chars or English words).
+
+    Returns:
+        Joined string.
+    """
+    if not tokens:
+        return ""
+    parts = [tokens[0]]
+    for i in range(1, len(tokens)):
+        is_eng = bool(re.match(r'[a-zA-Z]', tokens[i]))
+        prev_eng = bool(re.match(r'[a-zA-Z]', tokens[i - 1]))
+        if is_eng and prev_eng:
+            parts.append(' ')
+        parts.append(tokens[i])
+    return ''.join(parts)
+
+
+def diff_to_vocab(original, polished, vocab):
+    """Extract word-level replacements from original vs polished and accumulate in vocab.
+
+    Uses SequenceMatcher on tokenized text. Only processes 'replace' opcodes;
+    ignores 'delete' and 'insert' opcodes.
+
+    Args:
+        original: Original ASR text.
+        polished: Haiku-polished text.
+        vocab: Current vocab dict.
+
+    Returns:
+        NEW vocab dict with accumulated replacements (input not mutated).
+    """
+    if original == polished:
+        return copy.deepcopy(vocab)
+
+    orig_tokens = _tokenize_for_diff(original)
+    pol_tokens = _tokenize_for_diff(polished)
+
+    new_vocab = copy.deepcopy(vocab)
+
+    matcher = difflib.SequenceMatcher(None, orig_tokens, pol_tokens)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != 'replace':
+            continue
+
+        error = _join_tokens(orig_tokens[i1:i2])
+        correct = _join_tokens(pol_tokens[j1:j2])
+
+        if not error or not correct:
+            continue
+
+        # Skip single-char corrections — too unreliable for CJK
+        if len(correct) <= 1 or len(error) <= 1:
+            continue
+
+        if correct in new_vocab:
+            old_variants = new_vocab[correct]["variants"]
+            new_vocab[correct] = {
+                "variants": {**old_variants, error: old_variants.get(error, 0) + 1}
+            }
+        else:
+            new_vocab[correct] = {"variants": {error: 1}}
+
+    return new_vocab
+
+
+def save_vocab(vocab, vocab_path=None):
+    """Save vocab dict to JSON file atomically, merging with on-disk data.
+
+    Reads current file first to preserve entries added externally (e.g. glossary
+    terms added by scripts while daemon is running). Merges variant counts
+    additively, then writes atomically via .tmp rename.
+
+    Args:
+        vocab: Vocab dict from daemon memory.
+        vocab_path: Optional path override (for testing). Defaults to VOCAB_PATH.
+    """
+    path = Path(vocab_path) if vocab_path else VOCAB_PATH
+
+    # Merge with on-disk vocab to preserve externally-added entries
+    disk_vocab = load_vocab(str(path))
+    merged = copy.deepcopy(disk_vocab)
+    for term, data in vocab.items():
+        if term in merged:
+            # Merge variants: keep max count for each variant
+            existing_variants = merged[term].get("variants", {})
+            new_variants = data.get("variants", {})
+            for variant, count in new_variants.items():
+                existing_variants[variant] = max(existing_variants.get(variant, 0), count)
+            merged[term] = {"variants": existing_variants}
+        else:
+            merged[term] = copy.deepcopy(data)
+
+    tmp_path = path.with_suffix('.tmp')
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    tmp_path.rename(path)
 
 
 class PostProcessorLoader:
@@ -109,6 +518,12 @@ class PostProcessorLoader:
 
         if framework == "regex":
             return None  # No model needed
+
+        if framework == "ssh-claude":
+            return None  # No model needed; SSH calls handled in _post_process()
+
+        if framework == "vertex-ai":
+            return None  # No model needed; SSH+proxy calls handled in _post_process()
 
         if framework == "llama-cpp":
             try:

@@ -390,6 +390,7 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setattr('voice_input.AUDIO_FILE', config_dir / "recording.wav")
     monkeypatch.setattr('voice_input.DAEMON_PID_FILE', config_dir / "daemon.pid")
     monkeypatch.setattr('voice_input.SOCKET_PATH', config_dir / "daemon.sock")
+    monkeypatch.setattr('voice_input.PROCESSING_FILE', config_dir / "processing.flag")
     monkeypatch.setattr('voice_input.MODEL_STATE_FILE', config_dir / "current_model.txt")
 
     yield {
@@ -399,6 +400,7 @@ def isolated_environment(tmp_path, monkeypatch):
         'socket_path': config_dir / "daemon.sock",
         'pid_file': config_dir / "recording.pid",
         'daemon_pid_file': config_dir / "daemon.pid",
+        'processing_file': config_dir / "processing.flag",
         'audio_file': config_dir / "recording.wav",
         'model_state_file': config_dir / "current_model.txt",
     }

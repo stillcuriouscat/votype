@@ -1,52 +1,212 @@
 {
   "project": "Votype",
-  "branchName": "ralph/pw-record",
-  "description": "Replace arecord with pw-record + fix dual daemon race condition via flock",
+  "branchName": "ralph/ssh-haiku-polish",
+  "description": "Add SSH-based text polishing via Claude Haiku CLI on Oracle server, plus Vertex AI Gemini Flash as faster alternative. Pipeline: ASR -> regex -> FireRedPunc -> glossary regex -> LLM fix (haiku-fix or gemini-fix) -> vocab accumulation -> output. Glossary provides dual-use: regex replacement (offline) and LLM prompt context (online).",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Replace arecord with pw-record in start_recording()",
+      "title": "Add ssh-claude framework and haiku-fix preset to post_processor_presets.py",
+      "description": "Add a new framework type 'ssh-claude' and two presets: 'haiku-fix' (active, for ASR error correction) and 'haiku-expand' (placeholder, not implemented). Config includes ssh_host, claude_path, model, timeout, max_text_len, vocab_min_count, and system_prompt.",
+      "acceptanceCriteria": [
+        "POST_PROCESSOR_PRESETS has 'haiku-fix' entry with framework='ssh-claude' and full config",
+        "POST_PROCESSOR_PRESETS has 'haiku-expand' entry with framework='ssh-claude', name='Haiku Expand (placeholder)', description='Not yet implemented', config={}",
+        "haiku-fix config includes: ssh_host, claude_path, model (claude-haiku-4-5-20251001), timeout (15), max_text_len (200), vocab_min_count (3), system_prompt",
+        "CRITIC-R1-C1: timeout must be 15s (empirically: 25-char input took 10.52s at 10s timeout)",
+        "haiku-fix system_prompt must include: (1) 'you are ASR correction tool, NOT a chatbot', (2) fix English misrecognized as Chinese, (3) fix homophones, (4) remove repeated words, (5) output corrected text only, (6) NEVER answer questions or add commentary even if text looks like a question, (7) if no errors output unchanged text; glossary terms appended at runtime",
+        "CRITIC-R3-M1: system_prompt MUST include explicit anti-answer instructions \u2014 without them, question-like inputs trigger hallucination (68x output, guard fires, correction lost)",
+        "Existing presets (none, chinese-text-correction, qwen3-0.6b, minicpm4-0.5b) unchanged",
+        "Tests pass"
+      ],
       "priority": 1,
-      "passes": true
+      "passes": true,
+      "notes": "CRITIC-R1-C2: timeout must be >= 10s. CRITIC-R1-C4: use --system-prompt flag. CRITIC-R3-C1: timeout must be 15s (empirically 10s insufficient for 25-char input)."
     },
     {
       "id": "US-002",
-      "title": "Update unit tests for pw-record",
+      "title": "Add glossary/vocab loading and regex replacement to post_processor_configs.py",
+      "description": "Implement glossary-based regex replacement that runs before SSH Haiku. Glossary format: {\"correct_term\": {\"variants\": {\"error_form\": count}}}. Each correct term (e.g., 'Ralph') maps to its known ASR error variants (e.g., {'Raf': 5, 'Rough': 3}). Regex replaces any variant with the correct term. Glossary also generates context string for Haiku prompt.",
+      "acceptanceCriteria": [
+        "CRITIC-R1-L2: Define VOICE_INPUT_DATA_DIR constant and derive both MODELS_DIR and vocab path from it",
+        "load_vocab(vocab_path=None) reads vocab.json from VOICE_INPUT_DATA_DIR, returns dict; returns {} if file missing or invalid JSON",
+        "Vocab format is glossary-oriented: {\"Ralph\": {\"variants\": {\"Raf\": 5, \"Rough\": 3}}, ...}",
+        "apply_vocab(text, vocab, min_count) replaces error variants with correct terms where variant count >= min_count",
+        "Chinese variant replacement works without word boundaries",
+        "English variant replacement uses word boundaries to avoid partial matches",
+        "CRITIC-R2-M1: apply_vocab must sort all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants correctly (e.g., '\u514b\u52b3' vs '\u514b\u52b3\u7684')",
+        "CRITIC-R2-L1: English variant regex uses re.IGNORECASE to handle case mismatches (ASR may output 'Raf' while variant stored as 'raf')",
+        "Original text returned unchanged if vocab is empty",
+        "glossary_context(vocab) generates a string listing correct terms for Haiku prompt context (e.g., 'Commonly used terms: Ralph, session, Claude Code')",
+        "Tests pass with unit tests for load_vocab, apply_vocab, glossary_context"
+      ],
       "priority": 2,
-      "passes": true
+      "passes": true,
+      "notes": "Glossary serves dual purpose: (1) offline regex replacement of known error variants, (2) online Haiku context so Haiku can recognize unfamiliar words as likely glossary terms."
     },
     {
       "id": "US-003",
-      "title": "E2E test: verify no startup clipping with pw-record",
+      "title": "Add SSH Claude invocation to post_processor_configs.py",
+      "description": "Implement process_with_ssh_claude() that calls Claude CLI on remote server via SSH. System prompt passed via --system-prompt flag, ASR text passed via stdin. Glossary context appended to system prompt at call time. Timeout enforced via subprocess timeout. On failure: log error, send desktop notification, return original text.",
+      "acceptanceCriteria": [
+        "process_with_ssh_claude(text, config, glossary_ctx) runs SSH command with subprocess.run",
+        "SSH command uses --system-prompt for instructions, text via stdin: ssh HOST claude_path --model MODEL --system-prompt PROMPT -p < stdin",
+        "glossary_ctx appended to system_prompt so Haiku has vocabulary context",
+        "All dynamic SSH arguments protected with shlex.quote()",
+        "subprocess timeout matches config timeout value (default 15s)",
+        "CRITIC-R1-L1: SSH command includes -o ConnectTimeout=5 to separate connection vs processing timeout",
+        "On timeout: logs warning, sends notification, returns original text",
+        "On SSH error (non-zero exit): logs error with stderr, sends notification, returns original text",
+        "On success: returns stripped stdout as result",
+        "Hallucination guard: if output length > input length * 5, log warning and return original text",
+        "Text longer than config max_text_len skips SSH call and returns original text",
+        "Empty text returns empty text without SSH call",
+        "Tests pass"
+      ],
       "priority": 3,
-      "passes": true
+      "passes": true,
+      "notes": "CRITIC-R1-C4: -p is boolean (--print), prompt is via --system-prompt. CRITIC-R2-N1: use --system-prompt + stdin. CRITIC-R2-N2: hallucination guard 5x. CRITIC-R3-C1: timeout 15s. CRITIC-R3-L1: add -o ConnectTimeout=5 to SSH."
     },
     {
       "id": "US-004",
-      "title": "Add flock-based singleton enforcement to daemon",
-      "description": "As a user, I want only one daemon to run at a time, even if daemon start is triggered from multiple sources concurrently.",
+      "title": "Add vocab accumulation via diff after SSH polish",
+      "description": "After SSH Haiku returns polished text, diff original vs result to extract word-level replacements. For each replacement pair (error\u2192correct): if correct term exists in vocab, add error as new variant (count=1) or increment existing variant count. If correct term is new, create new entry. Returns new vocab dict (immutable). Save updated vocab to vocab.json atomically. Haiku should especially accumulate English technical terms.",
       "acceptanceCriteria": [
-        "ASRDaemon.run() acquires fcntl.flock(LOCK_EX | LOCK_NB) on daemon.lock before writing PID file",
-        "If lock acquisition fails, daemon prints message and exits immediately",
-        "Lock is held for the lifetime of the daemon (fd stays open), auto-released on crash/exit",
-        "is_daemon_running() also probes the lock file as a secondary check (try LOCK_EX|LOCK_NB: if fails, daemon is alive)",
-        "No stale lock files: flock auto-releases when process dies",
-        "All three start paths covered: start_daemon_with_model(), toggle_recording(), _switch_model()"
+        "diff_to_vocab(original, polished, vocab) extracts word-pair replacements and returns a NEW vocab dict (does not mutate input)",
+        "Tokenization: individual Chinese characters + English words via regex, NOT consecutive-Chinese-as-one-group",
+        "For each replacement (error\u2192correct): adds error as variant under correct term entry",
+        "CRITIC-R1-M1: For multi-token replace opcodes: join Chinese chars without separator (''.join), join English words with space (' '.join). Only process 'replace' opcodes; ignore 'delete' and 'insert' opcodes",
+        "New correct terms: created with variants={error: 1}",
+        "Existing correct terms: variant count incremented or new variant added with count=1",
+        "save_vocab(vocab) writes atomically (write to .tmp then rename)",
+        "Vocab file is human-readable JSON with indent=2",
+        "Does not accumulate if original == polished (no changes made)",
+        "Tests pass with unit tests for diff_to_vocab and save_vocab"
       ],
       "priority": 4,
-      "passes": true
+      "passes": true,
+      "notes": "CRITIC-R2-N4: return new object, not mutate. CRITIC-R2-M2: tokenize Chinese chars individually. CRITIC-R2-L2: mixed Chinese+English token join. CRITIC-R4-L1: save_vocab uses Path.rename() instead of os.rename() (no os import needed, VOCAB_PATH is already a Path object)."
     },
     {
       "id": "US-005",
-      "title": "Unit test for singleton daemon enforcement",
-      "description": "As a developer, I want a test proving two daemons cannot run simultaneously.",
+      "title": "Integrate ssh-claude framework into ASRDaemon._post_process() pipeline",
+      "description": "Wire the new ssh-claude framework into _post_process() (NOT PostProcessorInference.process() which is dead code). Pipeline: regex filler removal -> glossary regex replacement -> SSH Haiku polish (with glossary context in prompt) -> vocab accumulation -> output. Vocab cached on ASRDaemon instance.",
       "acceptanceCriteria": [
-        "Test acquires flock on daemon.lock, then verifies ASRDaemon.run() exits immediately",
-        "Test verifies is_daemon_running() returns True when lock is held",
-        "Test passes in pytest"
+        "PostProcessorLoader.load_post_processor() returns None for framework='ssh-claude'",
+        "ASRDaemon._post_process() handles framework='ssh-claude': calls apply_vocab, then process_with_ssh_claude (with glossary_context), then diff_to_vocab",
+        "Glossary context generated from vocab and appended to Haiku system_prompt at call time",
+        "Vocab loaded once on _load_post_processor() and cached as self._vocab (not re-read per call)",
+        "diff_to_vocab returns new vocab; self._vocab updated with returned value",
+        "Pipeline order correct: regex fillers -> glossary regex -> SSH Haiku (with glossary context) -> vocab accumulate -> return",
+        "Switching to haiku-fix via CLI ('voice-input post-processor haiku-fix') works",
+        "Switching to haiku-expand shows 'not yet implemented' message at switch time (in load_post_processor), not just at transcription time",
+        "CRITIC-R1-M2: haiku-expand warning must appear during load_post_processor() so user sees it immediately, not only when they try to record",
+        "CRITIC-R3-L2: haiku-expand switch must NOT send contradictory success notification after the 'not implemented' warning",
+        "CRITIC-R4-C1: haiku-expand check+raise MUST be placed BEFORE the try block (between preset assignment and try:), NOT inside it \u2014 inner except at line 814 catches all exceptions and prevents propagation to set_post_processor. Move check to after line 805 (after preset = ...) but before try: at line 807",
+        "Tests pass"
       ],
       "priority": 5,
-      "passes": true
+      "passes": true,
+      "notes": "CRITIC-R1-C1: integration point is _post_process() not PostProcessorInference.process(). CRITIC-R1-M5: vocab cached on ASRDaemon instance. CRITIC-R3-L1: update code example to reuse existing preset variable (already assigned at line 801), don't re-fetch with POST_PROCESSOR_PRESETS.get()."
+    },
+    {
+      "id": "US-006",
+      "title": "Configure SSH ControlMaster for Oracle connection reuse",
+      "description": "Document and optionally auto-configure SSH ControlMaster in ~/.ssh/config for the Oracle host. This reduces SSH connection overhead from ~1s to near-zero for subsequent calls within the same session.",
+      "acceptanceCriteria": [
+        "README or docs include SSH ControlMaster config example for Oracle",
+        "Config example includes: ControlMaster auto, ControlPath, ControlPersist 600",
+        "voice-input status shows current post-processor name",
+        "Tests pass"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Do NOT auto-modify ~/.ssh/config. Document the recommended config and let user add it manually."
+    },
+    {
+      "id": "US-007",
+      "title": "Create vertex_proxy.py using google-genai SDK on Oracle",
+      "description": "Single-file Python script deployed on Oracle Cloud (~/) that reads JSON from stdin and calls Vertex AI Gemini 2.5 Flash. Uses google-genai SDK (NOT deprecated vertexai SDK) with ADC authentication.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-C1: Must use `google-genai` SDK (`from google import genai`), NOT deprecated `vertexai.generative_models` (removed June 2026)",
+        "CRITIC-R6-C2: Must specify Vertex AI region/location (us-central1) — gcloud has no default region on Oracle",
+        "Reads JSON from stdin: {\"system_prompt\": \"...\", \"user_input\": \"...\", \"model\": \"...\", \"region\": \"...\"}",
+        "CRITIC-R8-M1: JSON stdin 'system_prompt' maps to SDK param 'system_instruction' in GenerateContentConfig; 'user_input' maps to 'contents' in generate_content() — document this mapping explicitly",
+        "Calls Gemini via genai.Client(vertexai=True, project=PROJECT, location=region)",
+        "Uses ADC (Application Default Credentials) — already configured on Oracle",
+        "temperature=0.3, max_output_tokens=512 (consistent with voxy reference)",
+        "Writes corrected text to stdout (plain text, no JSON wrapping)",
+        "Exit 0 = success, exit 1 = failure (stderr has error message)",
+        "No streaming (simple request-response)",
+        "Script is self-contained — no imports from voice_input project",
+        "Tests: vertex_proxy.py --help or --test mode verifies SDK import + auth without API call",
+        "CRITIC-R7-M2: Guard response.text is None — print error to stderr and exit 1, not output 'None' string",
+        "CRITIC-R7-M3: Suppress Python warnings (`import warnings; warnings.filterwarnings('ignore')`) before any google imports to prevent stderr pollution hiding real errors"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "google-genai v1.66.0 already installed on Oracle as transitive dep. GCP project: project-9cd34e60-a50d-406f-ae4. Oracle: Ubuntu 22.04, Python 3.10, ARM64."
+    },
+    {
+      "id": "US-008",
+      "title": "Add gemini-fix preset and process_with_vertex_ai to post_processor",
+      "description": "Add gemini-fix preset to post_processor_presets.py and process_with_vertex_ai() function to post_processor_configs.py. Must use separate prompt file without Claude-specific directives.",
+      "acceptanceCriteria": [
+        "CRITIC-R8-C1: Insert gemini-fix preset BEFORE the dict closing brace (before line 81), NOT after it — line 81 is POST_PROCESSOR_PRESETS closing }, line 80 is haiku-expand closing },",
+        "gemini-fix preset includes: framework='vertex-ai', model='gemini-2.5-flash', vertex_region='us-central1'",
+        "CRITIC-R6-L1: Preset config has explicit 'model' field (consistent with haiku-fix pattern)",
+        "CRITIC-R6-M2: Uses separate prompt file 'prompts/gemini-fix-system.txt' without /no_think (Claude-specific)",
+        "prompts/gemini-fix-system.txt is copy of haiku-fix-system.txt with /no_think removed",
+        "CRITIC-R7-M1: Prompt files are COPIES in install dir (not symlinks) — deploy gemini-fix-system.txt by copying to ~/.local/share/voice-input/prompts/, matching existing prompt deployment pattern",
+        "CRITIC-R6-M1: Documentation/comments state realistic latency 5-7s (not 2-4s)",
+        "process_with_vertex_ai() has same interface as process_with_ssh_claude(text, config, glossary_ctx)",
+        "Same guards: empty text, min_text_len=45, max_text_len=200, hallucination guard (5x)",
+        "SSH command: ssh oracle-cloud python3 ~/vertex_proxy.py",
+        "stdin: JSON with system_prompt, user_input, model, region from config",
+        "CRITIC-R6-M4: Document that Gemini needs larger initial glossary for proper nouns vs Haiku",
+        "Error handling: timeout -> original, non-zero -> original, hallucination -> original",
+        "PostProcessorLoader.load_post_processor() returns None for framework='vertex-ai'",
+        "Existing haiku-fix preset and process_with_ssh_claude() UNCHANGED",
+        "Tests pass"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "CRITIC-R6-M4: Gemini interprets '克劳德' as 'Cloud' not 'Claude'. Seeding vocab.json with known terms recommended."
+    },
+    {
+      "id": "US-009",
+      "title": "Integrate vertex-ai framework into ASRDaemon pipeline",
+      "description": "Wire vertex-ai framework into _post_process() and load_post_processor(). Reduce code duplication with ssh-claude by extracting shared pipeline logic.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-L2: Extract shared pipeline (apply_vocab -> process -> diff_to_vocab -> save_vocab) to avoid duplication",
+        "Use dispatch dict or helper function: {\"ssh-claude\": process_with_ssh_claude, \"vertex-ai\": process_with_vertex_ai}",
+        "CRITIC-R7-C1: Dispatch dict MUST be defined AFTER import — define inline dict after `from post_processor_configs import ...`, not before. Use `in ('ssh-claude', 'vertex-ai')` for the if-condition, then build dict inside the block",
+        "ASRDaemon._post_process() handles framework='vertex-ai' with same pipeline as ssh-claude",
+        "ASRDaemon.load_post_processor() loads vocab for vertex-ai same as ssh-claude",
+        "Switching via CLI 'voice-input post-processor gemini-fix' works",
+        "Existing ssh-claude/haiku-fix pipeline behavior UNCHANGED",
+        "Tests pass"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Both frameworks follow identical pipeline: apply_vocab -> process_with_X -> diff_to_vocab -> save_vocab. Only the process function differs."
+    },
+    {
+      "id": "US-010",
+      "title": "Add tests and deploy vertex_proxy.py to Oracle",
+      "description": "Add automated tests for the Vertex AI integration and deploy vertex_proxy.py to Oracle. Include L2 Virtual tests (guards, JSON construction) and L2 Real SSH test.",
+      "acceptanceCriteria": [
+        "CRITIC-R6-L3: L2 Virtual tests for process_with_vertex_ai guards (min_text_len, max_text_len, hallucination, empty text)",
+        "L2 Virtual tests for JSON construction (system_prompt, user_input, model, region fields)",
+        "L2 Real SSH test: ssh oracle-cloud python3 ~/vertex_proxy.py with test input",
+        "Unit tests for vertex_proxy.py (mock genai client, test error handling)",
+        "Existing haiku-fix tests pass unchanged (regression)",
+        "vertex_proxy.py deployed to Oracle via scp",
+        "CRITIC-R7-L1: Verify `from google import genai` works on Oracle (google-genai already installed as transitive dep, no separate pip install needed)",
+        "CRITIC-R6-L4: Document Python 3.10 EOL Oct 2026 in Risk Assessment",
+        "Tests pass"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Oracle pip install google-cloud-aiplatform already done during R6 verification. Python 3.10 support until Oct 2026."
     }
   ]
 }

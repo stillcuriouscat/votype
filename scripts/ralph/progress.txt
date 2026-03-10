@@ -1,227 +1,151 @@
 # Ralph Progress Log
-Started: Fri 06 Mar 2026 04:12:41 PM CST
----
+Started: Sat 07 Mar 2026 05:23:21 PM CST
 
 ## Codebase Patterns
-- POST_PROCESSOR_PRESETS dict in post_processor_presets.py: each entry has name, description, framework, and optional config
-- Frameworks: "regex" (no config), "llama-cpp" (model_path, prompt_template, etc.), "firered-punc" (model_dir)
-- MODELS_DIR = ~/.local/share/voice-input/models/ — all model files/dirs go here
-- Venv activation: source ~/.local/share/voice-input/venv/bin/activate
-- FireRedASR2S package: ~/code/FireRedASR2S (PYTHONPATH, not pip installed)
-- PostProcessorLoader: static methods per framework (load_llama_model, load_firered_punc), routed by framework key in load_post_processor()
-- FireRedPunc API: FireRedPunc.from_pretrained(model_dir, FireRedPuncConfig(use_gpu=False))
-- Import: from fireredasr2s.fireredpunc.punc import FireRedPunc, FireRedPuncConfig
-- FireRedPunc inference API: model.process([text]) → list of {"punc_text": ..., "origin_text": ...} (batch API, takes list)
-- Case preservation: build {lowered: original} dict from re.findall(r'[a-zA-Z]+', text), lowercase input for model, re.sub to restore
-- Launcher script: ~/.local/bin/voice-input (outside repo) — activates venv, sets PYTHONPATH, runs voice_input.py
-- Deploy path: ~/.local/share/voice-input/ — symlinks to ~/code/voice_input/*.py; new .py files need symlinks added
-- Daemon lifecycle: `voice-input kill` → `voice-input daemon` (allow ~20s for model loading before testing)
-- E2E test: `source venv && PYTHONPATH=~/code/FireRedASR2S:$PYTHONPATH python test_e2e_kitty.py --verbose`
-- E2E test with post-processor: `... python test_e2e_kitty.py --post-processor none --verbose`
-- Auto-punctuation verification triggers automatically based on ASR model (firered-asr), not --post-processor flag
-- Daemon socket commands: get_post_processor, set_post_processor (data: {post_processor_id: ...}), list_post_processors
-- Daemon class is `ASRDaemon` (not VoiceInputDaemon) in voice_input.py
-- punc_config.model_dir uses `~` prefix — must `os.path.expanduser()` before passing to loader
-- MODEL_PRESETS['punctuation'] values: 'builtin' (ASR handles it), 'firered-punc' (needs FireRedPunc auto-load), 'none' (no punctuation)
-- punc_config (sibling of config) only present when punctuation='firered-punc', contains model_dir
-- Mosh/tmux Kitty windows: scrollback contains tmux border rendering (────), not clean transcription text — use daemon log as fallback verification
-- _post_process pipeline is explicit: remove_fillers → auto-punctuation (punc_model) → LLM (post_processor_model) — don't call PostProcessorInference.process() from daemon
+- VOICE_INPUT_DATA_DIR is the base constant; MODELS_DIR and VOCAB_PATH derive from it
+- Existing presets use "framework" key to determine which loader/pipeline branch to use
+- Tests use sys.path.insert(0, project_root) for imports since project isn't pip-installed
+- 3 pre-existing test failures in test_unit.py (daemon detection + stale default model assertion) — not related to ssh-claude work
+- English regex in mixed CJK text: use `(?<![a-zA-Z])` / `(?![a-zA-Z])` instead of `\b` — Python treats CJK as `\w` so `\b` fails at CJK-English boundaries
+- New module-level functions (load_vocab, apply_vocab, etc.) go before PostProcessorLoader class, after regex patterns
+- Lazy import `from voice_input import notify` inside function body to avoid circular deps; mock target = `voice_input.notify`
+- Lazy imports inside methods create LOCAL names — mock at the SOURCE module (e.g., `post_processor_configs.apply_vocab`), not the consuming module
 ---
 
-## 2026-03-06 - US-001
-- Added 'firered-punc' preset to POST_PROCESSOR_PRESETS with framework='firered-punc' and model_dir config
-- Files changed: post_processor_presets.py
+## 2026-03-08 - US-001
+- Added VOICE_INPUT_DATA_DIR constant, refactored MODELS_DIR to derive from it
+- Added haiku-fix preset: framework=ssh-claude, timeout=15, anti-answer system_prompt
+- Added haiku-expand placeholder: empty config, "Not yet implemented" description
+- Created tests/test_post_processor_presets.py (29 tests, all passing)
+- Files changed: post_processor_presets.py, tests/test_post_processor_presets.py
 - **Learnings for future iterations:**
-  - Preset structure: name (display), description, framework (routing key), config (framework-specific params)
-  - firered-punc uses model_dir (directory) vs llama-cpp which uses model_path (single file)
-  - All existing presets preserved — append new entries at end of dict
+  - system_prompt is a concatenated Python string (parenthesized), not triple-quoted — keeps dict formatting clean
+  - haiku-expand uses empty config={} as sentinel for "not implemented" detection in US-005
 ---
 
-## 2026-03-06 - US-002
-- Added load_firered_punc() static method to PostProcessorLoader
-- Added 'firered-punc' branch to load_post_processor() routing
-- Verified: model loads in ~1s, returns FireRedPunc instance, existing regex/llama-cpp paths unchanged
-- Files changed: post_processor_configs.py
+## 2026-03-08 - US-002
+- Added load_vocab(), apply_vocab(), glossary_context() as module-level functions in post_processor_configs.py
+- Added VOCAB_PATH constant derived from VOICE_INPUT_DATA_DIR
+- Created tests/test_vocab.py (25 tests, all passing)
+- Files changed: post_processor_configs.py, tests/test_vocab.py
 - **Learnings for future iterations:**
-  - FireRedPunc is loaded via FireRedPunc.from_pretrained(model_dir, config) — classmethod, not constructor
-  - use_gpu=False is critical — GPU VRAM is occupied by ASR model
-  - post_processor_configs.py was a new (untracked) file, needs `git add` before commit
-  - Loading takes ~1s on CPU, produces verbose tqdm output to stderr (normal)
+  - Python \b word boundary fails at CJK-English boundaries (both are \w) — use (?<![a-zA-Z]) / (?![a-zA-Z]) for ASCII-letter-only boundaries
+  - apply_vocab sorts all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants
+  - Vocab format: {"correct_term": {"variants": {"error_form": count}}} — glossary-oriented, not error-oriented
 ---
 
-## 2026-03-06 - US-003
-- Added process_with_firered_punc() static method to PostProcessorInference with English case preservation
-- Added 'firered-punc' branch to PostProcessorInference.process() routing
-- Verified: WER/DEMO preserved as uppercase, Chinese punctuation added, empty string handled, full pipeline works
-- Files changed: post_processor_configs.py
+## 2026-03-08 - US-003
+- Added process_with_ssh_claude() as module-level function in post_processor_configs.py
+- Added subprocess and shlex imports
+- Created tests/test_ssh_claude.py (14 tests, all passing)
+- Files changed: post_processor_configs.py, tests/test_ssh_claude.py
 - **Learnings for future iterations:**
-  - FireRedPunc.process() is a batch API: takes list of strings, returns list of dicts with "punc_text" key
-  - NOT model.punc() — the method is model.process() (same name as PostProcessorInference.process, be careful)
-  - Case preservation: build orig_words dict before lowercasing, then re.sub after model output
-  - model.process() lowercases internally but the PRD algorithm of explicit lowercasing + restoration works correctly
+  - notify() is lazily imported inside function body (`from voice_input import notify`) to avoid circular dependency — test mocking must target `voice_input.notify`, NOT `post_processor_configs.notify`
+  - shlex.quote() protects system_prompt from SSH remote shell word-splitting (subprocess list bypasses local shell, but SSH concatenates args on remote)
+  - subprocess.run with list args + input=text avoids all shell escaping issues for ASR text
 ---
 
-## 2026-03-06 - US-004
-- Created test_firered_punc.py with 8 tests (4 case preservation unit tests + 4 real model integration tests)
-- No mocks used — real FireRedPunc model loaded for integration tests
-- Files changed: test_firered_punc.py (new)
+## 2026-03-08 - US-004
+- Added diff_to_vocab(), save_vocab(), _tokenize_for_diff(), _join_tokens() to post_processor_configs.py
+- Added import copy, difflib, Path for immutable deepcopy, sequence matching, and atomic file ops
+- Created tests/test_diff_vocab.py (36 tests, all passing)
+- Files changed: post_processor_configs.py, tests/test_diff_vocab.py
 - **Learnings for future iterations:**
-  - Run tests with: `source ~/.local/share/voice-input/venv/bin/activate && PYTHONPATH=~/code/FireRedASR2S:$PYTHONPATH python test_firered_punc.py -v`
-  - FireRedPunc model loading produces verbose tqdm output to stderr — normal, doesn't affect test results
-  - process_with_firered_punc(None, "") works because empty string short-circuits before model call — safe to pass None as model for empty input test
-  - Full test suite runs in ~3s (model load ~1s + inference ~2s)
-  - setUpClass loads model once for all integration tests — efficient
+  - _tokenize_for_diff uses `[\u4e00-\u9fff]|[a-zA-Z]+` to split Chinese chars individually while keeping English words together
+  - _join_tokens: Chinese-Chinese = no separator, English-English = space, Mixed = no separator (adjacent concat)
+  - diff_to_vocab only processes 'replace' opcodes from SequenceMatcher — 'insert' and 'delete' are not useful for vocab accumulation
+  - copy.deepcopy(vocab) ensures immutability — new vocab dict returned, input never mutated
+  - save_vocab uses Path.rename() for atomic write (no os.rename needed since VOCAB_PATH is already a Path)
 ---
 
-## 2026-03-06 - US-005
-- Added PYTHONPATH export for ~/code/FireRedASR2S to ~/.local/bin/voice-input launcher script
-- Verified symlinks for post_processor_configs.py and post_processor_presets.py already exist in install dir
-- Verified daemon starts without import errors: `voice-input post-processors` lists firered-punc, model loads successfully
-- Files changed: ~/.local/bin/voice-input (outside repo — deployment file)
+## 2026-03-08 - US-005
+- Integrated ssh-claude framework into ASRDaemon pipeline
+- PostProcessorLoader.load_post_processor() returns None for framework='ssh-claude'
+- haiku-expand guard placed BEFORE try block (CRITIC-R4-C1) — raises ValueError that propagates to daemon handler
+- haiku-expand sends "not implemented" notification, no contradictory success notification (CRITIC-R3-L2)
+- Vocab loaded once in load_post_processor() and cached as self._vocab
+- _post_process() pipeline: regex fillers → auto-punctuation → glossary regex → SSH Haiku → vocab accumulation → LLM
+- Created tests/test_integration_ssh_claude.py (19 tests, all passing)
+- Files changed: post_processor_configs.py, voice_input.py, tests/test_integration_ssh_claude.py
 - **Learnings for future iterations:**
-  - Launcher script at ~/.local/bin/voice-input is outside the git repo — changes cannot be committed
-  - Symlinks from install dir (~/.local/share/voice-input/) to dev dir (~/code/voice_input/) were already created by US-002 deployment
-  - PYTHONPATH format: `export PYTHONPATH="$HOME/code/FireRedASR2S:${PYTHONPATH:-}"` — use `${PYTHONPATH:-}` to avoid unset variable errors
-  - Test launcher changes by running `~/.local/bin/voice-input post-processors` — quick validation without starting daemon
+  - Lazy imports inside _post_process() create local names — must mock at post_processor_configs module level, not voice_input module level
+  - haiku-expand detection: check `preset.get("config")` emptiness (empty dict = not implemented)
+  - The inner except in load_post_processor() catches all exceptions; to propagate errors, checks must be placed BEFORE the try block
 ---
 
-## 2026-03-06 - US-006
-- Verified existing E2E test passes with all integration changes: 7/7 checks pass
-- Verified unit tests pass: 8/8 tests pass
-- Committed previously unstaged integration changes: audio chunking, post-processor pipeline in daemon, settings dialog tab, E2E multi-window support
-- Daemon restarted with default post-processor (none), transcription worked correctly
-- Files changed: model_configs.py, model_presets.py, settings_dialog.py, test_e2e_kitty.py, voice_input.py
+## 2026-03-08 - US-006
+- Added SSH ControlMaster documentation to README.md (ControlMaster auto, ControlPath, ControlPersist 600)
+- Added haiku-fix post-processor documentation section
+- Updated CLI command examples to list haiku-fix
+- Verified voice-input status already shows post-processor name (get_post_processor command)
+- Created tests/test_ssh_controlmaster_docs.py (8 tests, all passing)
+- Files changed: README.md, tests/test_ssh_controlmaster_docs.py
 - **Learnings for future iterations:**
-  - Daemon restart: `voice-input kill` then `voice-input daemon` (no --stop/--start flags)
-  - Daemon needs ~20s to load FireRedASR model before becoming responsive
-  - pkill -9 -f 'voice_input.py' is needed to fully kill stubborn daemon processes; also clean up PID/socket files
-  - E2E test target window selection avoids Claude Code windows — test runs from agent won't interfere
-  - mosh/tmux border lines (`────`) can appear as "new text" in Kitty scrollback after marker — not actual transcription but test still passes
+  - show_status() already queries get_post_processor and displays post-processor name — no code change needed
+  - README tests verify content presence, useful for documentation-focused stories
 ---
 
-## 2026-03-06 - US-007
-- Added --post-processor flag to test_e2e_kitty.py
-- Implemented: post-processor switching via socket command before recording, punctuation verification (scrollback + daemon log fallback), original post-processor restore after test
-- Added _check_daemon_log_for_punctuation() helper for mosh/tmux environments
-- E2E test with firered-punc: 10/10 checks pass
-- E2E test without post-processor: 7/7 checks pass (no regression)
-- Unit tests: 8/8 pass (no regression)
-- Files changed: test_e2e_kitty.py
+## 2026-03-08 - E2E Test Fixes (post US-006)
+- Fixed test_e2e_virtual_ssh.py: diff_to_vocab no-change test used `is` (identity) but implementation returns deepcopy (correct per immutability contract); changed to `== / is not`
+- Fixed test_e2e_ssh_chain.py: test_vocab_roundtrip took (original, polished) as params — pytest treated them as missing fixtures; added module-scoped fixture wrapping test_ssh_correction
+- All E2E tests pass: 27 virtual + 3 SSH chain = 30 total
+- L1 Real E2E (test_e2e_ssh_haiku.py) requires daemon+Kitty+audio — manual testing only
 - **Learnings for future iterations:**
-  - Mosh/tmux Kitty windows show rendering artifacts (────) in scrollback, not clean transcription text
-  - Daemon log at /tmp/voice-input-notify.log has [PP] output lines with actual post-processed text — reliable fallback for verification
-  - set_post_processor returns {"status": "ok", "message": "Already using..."} when already active — check status first, "already" as fallback
-  - Punctuation check should scan raw after_marker text (before noise filtering) first, then daemon log as fallback
-  - `original_pp` tracking + restore ensures test is clean: saves state before switching, restores after test regardless of outcome
+  - E2E test scripts designed for `__main__` sequential chaining need pytest fixtures for inter-test data flow
+  - `assert x is y` checks identity, `assert x == y` checks equality — deepcopy always returns new object
 ---
 
-## 2026-03-06 - US-001 (punc-as-model-config PRD)
-- Added 'punctuation' key to all MODEL_PRESETS entries in model_presets.py
-- firered-asr: punctuation='firered-punc' with punc_config={'model_dir': '~/.local/share/voice-input/models/FireRedPunc'}
-- paraformer, sensevoice, fun-asr-nano: punctuation='builtin'
-- All 8 existing unit tests pass, Python import assertions verified
-- Files changed: model_presets.py
+## 2026-03-09 - US-007
+- Created vertex_proxy.py: self-contained Vertex AI Gemini proxy script for Oracle Cloud
+- Reads JSON from stdin (system_prompt, user_input, model, region), calls Gemini 2.5 Flash
+- Uses google-genai SDK: genai.Client(vertexai=True) with ADC authentication
+- SDK param mapping: JSON "system_prompt" → SDK "system_instruction", JSON "user_input" → SDK "contents"
+- Lazy SDK imports: --help works without google-genai installed, --test validates ADC via models.list()
+- Guards: response.text None → stderr + exit 1, missing user_input, invalid JSON, unknown args
+- warnings.filterwarnings('ignore') before google imports to suppress stderr pollution
+- Files changed: vertex_proxy.py (new)
 - **Learnings for future iterations:**
-  - MODEL_PRESETS structure: name, description, framework, punctuation (new), config, optional force_cpu/punc_config
-  - punc_config is a sibling of config (not nested inside it) — only present when punctuation='firered-punc'
-  - 'builtin' means the ASR framework handles punctuation internally (ct-punc for paraformer, built-in for sensevoice/fun-asr-nano)
+  - google-genai SDK is not installed locally (only on Oracle) — must use lazy imports for any flags that should work without SDK
+  - genai.Client() init is lazy (succeeds even with expired credentials) — use client.models.list() for true ADC validation
+  - 16 pre-existing test failures from uncommitted prompt migration (system_prompt → system_prompt_file) — not related to US-007
 ---
 
-## 2026-03-06 - US-002 (punc-as-model-config PRD)
-- Added self.punc_model to ASRDaemon.__init__ (separate from self.post_processor_model)
-- Added load_punctuation_model() method: checks MODEL_PRESETS[model_id]['punctuation'], auto-loads FireRedPunc or skips for builtin
-- Called load_punctuation_model() in start() after load_model(), before load_post_processor()
-- Verified: FireRedPunc loads correctly for firered-asr, punc_model=None for builtin models, all 8 unit tests pass
+## 2026-03-09 - US-008
+- Added gemini-fix preset to post_processor_presets.py (framework=vertex-ai, Gemini 2.5 Flash)
+- Created prompts/gemini-fix-system.txt (copy of haiku-fix without /no_think)
+- Added process_with_vertex_ai() to post_processor_configs.py — same interface and guards as process_with_ssh_claude()
+- Uses JSON stdin to vertex_proxy.py (avoids shell escaping issues unlike haiku-fix CLI args)
+- PostProcessorLoader returns None for framework='vertex-ai'
+- Files changed: post_processor_presets.py, post_processor_configs.py, prompts/gemini-fix-system.txt (new)
+- **Learnings for future iterations:**
+  - JSON stdin is cleaner than CLI args for passing Chinese text + long prompts (no shlex.quote needed)
+  - Prompt files already existed in install dir from previous adversarial review testing
+  - gemini-fix shares user_prompt_template_file with haiku-fix (prompts/haiku-fix-user.txt)
+---
+
+## 2026-03-09 - US-009
+- Extended vocab loading in load_post_processor() to handle vertex-ai framework
+- Refactored _post_process() with dispatch dict: {"ssh-claude": process_with_ssh_claude, "vertex-ai": process_with_vertex_ai}
+- Dispatch dict defined AFTER import (CRITIC-R7-C1) to avoid NameError
+- Updated docstring to mention vertex-ai alongside ssh-claude
 - Files changed: voice_input.py
 - **Learnings for future iterations:**
-  - Daemon class is ASRDaemon (not VoiceInputDaemon) — check actual class name before importing
-  - punc_config.model_dir uses ~ prefix, must os.path.expanduser() before passing to loader
-  - load_punctuation_model() is non-fatal: catches exceptions, logs, sets punc_model=None on failure
-  - punc_model is loaded AFTER ASR model but BEFORE post-processor — order matters for startup logging
+  - Dispatch dict pattern eliminates code duplication for frameworks sharing identical pipelines
+  - Dict must be defined AFTER the import block, not before (CRITIC-R7-C1)
+  - `in ("ssh-claude", "vertex-ai")` for if-condition, then dict inside the block
 ---
 
-## 2026-03-06 - US-003 (punc-as-model-config PRD)
-- Replaced single PostProcessorInference.process() call in _post_process with explicit 3-step pipeline
-- Step 1: PostProcessorInference.remove_fillers() (always)
-- Step 2: PostProcessorInference.process_with_firered_punc(self.punc_model, ...) if punc_model is not None
-- Step 3: PostProcessorInference.process_with_llm() if post-processor is llama-cpp
-- Auto-punctuation is skipped for models with builtin punctuation (punc_model=None)
-- Logging: [PUNC] tag for auto-punctuation results, [PP] for overall pipeline
-- All 8 unit tests pass, import verification OK
-- Files changed: voice_input.py
+## 2026-03-09 - US-010
+- Created tests/test_vertex_ai.py: 22 tests (unit guards, JSON stdin, command construction, hallucination, preset, integration dispatch)
+- Added 8 virtual E2E tests to test_e2e_virtual_ssh.py (vertex preset structure, guards, hallucination)
+- Created tests/test_e2e_vertex_chain.py: L2 Real SSH test (correction + vocab roundtrip)
+- Updated e2e_features.json: 7 new feature entries
+- Deployed vertex_proxy.py to Oracle via scp, verified SDK import (google-genai 1.66.0)
+- Total test results: 134 passed, 1 pre-existing failure (system_prompt→system_prompt_file migration)
+- Files changed: tests/test_vertex_ai.py (new), tests/test_e2e_virtual_ssh.py, tests/test_e2e_vertex_chain.py (new), tests/e2e_features.json
 - **Learnings for future iterations:**
-  - _post_process now owns the pipeline explicitly — don't call PostProcessorInference.process() anymore
-  - Step 3 only handles llama-cpp framework; firered-punc as post-processor is not routed here (US-004 will remove it from presets)
-  - PostProcessorInference static methods (remove_fillers, process_with_firered_punc, process_with_llm) are the reusable building blocks
----
-
-## 2026-03-06 - US-004 (punc-as-model-config PRD)
-- Removed 'firered-punc' entry from POST_PROCESSOR_PRESETS in post_processor_presets.py
-- Removed 'firered-punc' framework branch from PostProcessorLoader.load_post_processor()
-- Removed 'firered-punc' framework branch from PostProcessorInference.process()
-- Kept load_firered_punc() and process_with_firered_punc() static methods (used by daemon auto-punctuation)
-- Updated test_firered_punc.py: load model via load_firered_punc() directly, test pipeline as separate steps
-- All 8 unit tests pass, import verification confirms firered-punc not in presets
-- Files changed: post_processor_presets.py, post_processor_configs.py, test_firered_punc.py
-- **Learnings for future iterations:**
-  - Removing a preset from POST_PROCESSOR_PRESETS automatically hides it from CLI list/set commands (they iterate the dict)
-  - Tests that load models via load_post_processor() must be updated when preset is removed — use load_firered_punc() directly
-  - PostProcessorInference.process() is now LLM-only (regex + optional llama-cpp); punctuation is handled by daemon's _post_process pipeline
-  - Static methods on PostProcessorLoader/Inference are the stable API — preset routing is the unstable part
----
-
-## 2026-03-06 - US-005 (punc-as-model-config PRD)
-- Added backward compatibility for firered-punc in 4 locations:
-  1. Daemon set_post_processor socket command: returns informative error message
-  2. CLI set_post_processor(): prints explanation and lists available post-processors
-  3. Daemon startup (start()): treats firered-punc as 'none' if set as current_post_processor_id
-  4. run_daemon(): ignores firered-punc post_processor_id with info message
-- All 8 unit tests pass, no regression
-- Files changed: voice_input.py
-- **Learnings for future iterations:**
-  - POST_PROCESSOR_STATE_FILE is defined but never read/written — post_processor always defaults to "none" on startup
-  - Backward compat checks go BEFORE the "unknown" error check in set_post_processor handler
-  - run_daemon() is the entry point from CLI `_daemon` command — handles --post-processor arg before daemon.run()
-  - The daemon startup backward compat guard covers the case where external code sets current_post_processor_id before start()
----
-
-## 2026-03-06 - US-006 (punc-as-model-config PRD)
-- Updated module docstring in voice_input.py: added auto-punctuation note for firered-asr
-- Updated --help Commands section: post-processor commands now say "LLM post-processor", added punctuation auto note
-- Updated post_processor_presets.py docstring: full pipeline description including auto-punctuation step
-- All 8 unit tests pass, imports verified
-- Files changed: voice_input.py, post_processor_presets.py
-- **Learnings for future iterations:**
-  - Module docstring (__doc__) is printed by --help via `print(__doc__)` — keep them in sync
-  - --help section is in main() around line 1200, uses print() statements (not argparse for the top-level help)
-  - post_processor_presets.py docstring describes the pipeline — update it when pipeline changes
----
-
-## 2026-03-06 - US-007 (punc-as-model-config PRD)
-- Added TestPunctuationArchitecture class with 5 tests verifying new model-based punctuation config
-- Tests: firered-asr punctuation config, punc_config presence, builtin models, firered-punc not in POST_PROCESSOR_PRESETS, all models have punctuation key
-- Total: 13 tests pass (5 architecture + 4 case preservation + 4 integration)
-- Files changed: test_firered_punc.py
-- **Learnings for future iterations:**
-  - Use subTest() for parameterized assertions across multiple models — gives clear failure messages per model
-  - Architecture tests (config structure) should be in a separate test class from functional tests — fast, no model loading
-  - Existing integration tests (load_firered_punc, process_with_firered_punc, case preservation) already satisfy AC3/AC4 — no need to duplicate
----
-
-## 2026-03-06 - US-008 (punc-as-model-config PRD)
-- Updated test_e2e_kitty.py for auto-punctuation verification independent of --post-processor flag
-- check_daemon() now returns model_id string (not bool) to enable model-aware testing
-- Added AUTO_PUNC_MODELS set: {"firered-asr"} — triggers punctuation verification automatically
-- _check_daemon_log_for_punctuation() now scans both [PUNC] (auto-punctuation) and [PP] (post-processor) log lines
-- Updated docstring, usage examples, and --post-processor help text
-- E2E test without --post-processor: 8/8 checks pass (auto-punctuation verified via scrollback: 。)
-- E2E test with --post-processor none: 9/9 checks pass (auto-punctuation independent of post-processor)
-- Unit tests: 13/13 pass (no regression)
-- Files changed: test_e2e_kitty.py
-- **Learnings for future iterations:**
-  - check_daemon() returning model_id instead of bool enables model-aware behavior throughout the test
-  - Daemon log [PUNC] tag is the reliable fallback for auto-punctuation verification in mosh/tmux environments
-  - AUTO_PUNC_MODELS should be updated if new ASR models with auto-punctuation are added
-  - --post-processor none triggers post-processor switching section (pp_id="none") but auto-punctuation still runs independently
-  - tmux target window scrollback contains border rendering (────) which passes "New text" check but isn't transcription — punctuation check uses raw after_marker text
+  - RequestsDependencyWarning on Oracle confirms warnings.filterwarnings('ignore') is essential
+  - L2 Real tests need higher timeout (20s) for Vertex AI cold start
+  - Test min_text_len: input text must be >= min_text_len for SSH to fire (use "a" * 50)
+  - Python 3.10 EOL Oct 2026 — plan Ubuntu 24.04 upgrade
 ---
