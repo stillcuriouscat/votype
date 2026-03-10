@@ -614,11 +614,30 @@ class ASRDaemon:
         self.indicator = None
         self.gtk_thread = None
         self.post_processor_model = None
-        self.current_post_processor_id = DEFAULT_POST_PROCESSOR
+        self.current_post_processor_id = self._restore_post_processor_id()
         self.post_processor_framework = None
         self.punc_model = None  # Auto-punctuation model (separate from post-processor)
         self._vocab = {}  # Glossary vocab for ssh-claude (loaded in load_post_processor)
-    
+
+    @staticmethod
+    def _restore_post_processor_id():
+        """Restore post-processor ID from state file, or return default."""
+        try:
+            saved = POST_PROCESSOR_STATE_FILE.read_text().strip()
+            if saved in POST_PROCESSOR_PRESETS:
+                return saved
+        except (FileNotFoundError, OSError):
+            pass
+        return DEFAULT_POST_PROCESSOR
+
+    @staticmethod
+    def _persist_post_processor_id(preset_id):
+        """Save post-processor ID to state file for daemon restart recovery."""
+        try:
+            POST_PROCESSOR_STATE_FILE.write_text(preset_id)
+        except OSError:
+            pass
+
     def setup_indicator(self):
         """Set up the system tray icon."""
         if not HAS_INDICATOR:
@@ -841,6 +860,7 @@ class ASRDaemon:
         try:
             self.post_processor_model = PostProcessorLoader.load_post_processor(preset_id)
             self.current_post_processor_id = preset_id
+            self._persist_post_processor_id(preset_id)
             self.post_processor_framework = preset["framework"]
             # Load vocab once for SSH-based frameworks (cached on instance)
             if self.post_processor_framework in ("ssh-claude", "vertex-ai"):
