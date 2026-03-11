@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "voice_input",
+  "project_id": "401d5d2e-311e-4aba-962b-955b48bd9efd"
+}

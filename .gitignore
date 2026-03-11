@@ -30,3 +30,7 @@ scripts/ralph/CRITIQUE_*.md
 scripts/ralph/IMPLEMENTATION_PLAN.md
 scripts/ralph/archive/
 scripts/ralph/*.log
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
