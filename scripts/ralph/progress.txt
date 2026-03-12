@@ -1,151 +1,93 @@
 # Ralph Progress Log
-Started: Sat 07 Mar 2026 05:23:21 PM CST
+Started: Thu 12 Mar 2026 12:00:18 AM CST
+---
 
 ## Codebase Patterns
-- VOICE_INPUT_DATA_DIR is the base constant; MODELS_DIR and VOCAB_PATH derive from it
-- Existing presets use "framework" key to determine which loader/pipeline branch to use
-- Tests use sys.path.insert(0, project_root) for imports since project isn't pip-installed
-- 3 pre-existing test failures in test_unit.py (daemon detection + stale default model assertion) — not related to ssh-claude work
-- English regex in mixed CJK text: use `(?<![a-zA-Z])` / `(?![a-zA-Z])` instead of `\b` — Python treats CJK as `\w` so `\b` fails at CJK-English boundaries
-- New module-level functions (load_vocab, apply_vocab, etc.) go before PostProcessorLoader class, after regex patterns
-- Lazy import `from voice_input import notify` inside function body to avoid circular deps; mock target = `voice_input.notify`
-- Lazy imports inside methods create LOCAL names — mock at the SOURCE module (e.g., `post_processor_configs.apply_vocab`), not the consuming module
+- ModelLoader: each framework has a static `load_<framework>_model()` method + `elif` in `load_model()` dispatch
+- ModelInference: each framework has a static `transcribe_<framework>()` method + `elif` in `transcribe()` dispatch
+- `load_model()` returns `(model, framework, extra_data)` tuple — extra_data is None when no extra state needed
+- faster-whisper `model.transcribe()` returns `(Iterable[Segment], TranscriptionInfo)` — must unpack tuple
+- Pre-existing test failures: qwen2-audio tests (model removed), soundfile not in test env
+- Tests use `ASRDaemon.__new__(ASRDaemon)` to bypass __init__ — new attrs need explicit initialization in test fixtures
+- post_processor_configs.py functions use lazy import of `voice_input.notify` to avoid circular dependency
+- process_with_gemini_merge follows same SSH+vertex_proxy pattern as process_with_vertex_ai
 ---
 
-## 2026-03-08 - US-001
-- Added VOICE_INPUT_DATA_DIR constant, refactored MODELS_DIR to derive from it
-- Added haiku-fix preset: framework=ssh-claude, timeout=15, anti-answer system_prompt
-- Added haiku-expand placeholder: empty config, "Not yet implemented" description
-- Created tests/test_post_processor_presets.py (29 tests, all passing)
-- Files changed: post_processor_presets.py, tests/test_post_processor_presets.py
+## 2026-03-12 - US-007
+- Created tests/test_dual_asr_fusion.py with 29 tests (all passing)
+- Coverage: ModelLoader (3), ModelInference (3), gemini-merge guards (5), user input format (3), errors (2), preset (5), secondary model lifecycle (3), pipeline dispatch (2), regression (3)
+- Files changed: tests/test_dual_asr_fusion.py (new)
 - **Learnings for future iterations:**
-  - system_prompt is a concatenated Python string (parenthesized), not triple-quoted — keeps dict formatting clean
-  - haiku-expand uses empty config={} as sentinel for "not implemented" detection in US-005
+  - Mock faster-whisper import with sys.modules patching (package not installed in test env)
+  - Use patch("model_configs._trim_leading_clipping") to avoid soundfile dependency in transcribe tests
+  - Pre-existing failure: test_pipeline_accumulates_vocab_on_change (reads real vocab.json)
 ---
 
-## 2026-03-08 - US-002
-- Added load_vocab(), apply_vocab(), glossary_context() as module-level functions in post_processor_configs.py
-- Added VOCAB_PATH constant derived from VOICE_INPUT_DATA_DIR
-- Created tests/test_vocab.py (25 tests, all passing)
-- Files changed: post_processor_configs.py, tests/test_vocab.py
-- **Learnings for future iterations:**
-  - Python \b word boundary fails at CJK-English boundaries (both are \w) — use (?<![a-zA-Z]) / (?![a-zA-Z]) for ASCII-letter-only boundaries
-  - apply_vocab sorts all (variant, correct_term) pairs by variant length descending before applying, to handle overlapping variants
-  - Vocab format: {"correct_term": {"variants": {"error_form": count}}} — glossary-oriented, not error-oriented
----
-
-## 2026-03-08 - US-003
-- Added process_with_ssh_claude() as module-level function in post_processor_configs.py
-- Added subprocess and shlex imports
-- Created tests/test_ssh_claude.py (14 tests, all passing)
-- Files changed: post_processor_configs.py, tests/test_ssh_claude.py
-- **Learnings for future iterations:**
-  - notify() is lazily imported inside function body (`from voice_input import notify`) to avoid circular dependency — test mocking must target `voice_input.notify`, NOT `post_processor_configs.notify`
-  - shlex.quote() protects system_prompt from SSH remote shell word-splitting (subprocess list bypasses local shell, but SSH concatenates args on remote)
-  - subprocess.run with list args + input=text avoids all shell escaping issues for ASR text
----
-
-## 2026-03-08 - US-004
-- Added diff_to_vocab(), save_vocab(), _tokenize_for_diff(), _join_tokens() to post_processor_configs.py
-- Added import copy, difflib, Path for immutable deepcopy, sequence matching, and atomic file ops
-- Created tests/test_diff_vocab.py (36 tests, all passing)
-- Files changed: post_processor_configs.py, tests/test_diff_vocab.py
-- **Learnings for future iterations:**
-  - _tokenize_for_diff uses `[\u4e00-\u9fff]|[a-zA-Z]+` to split Chinese chars individually while keeping English words together
-  - _join_tokens: Chinese-Chinese = no separator, English-English = space, Mixed = no separator (adjacent concat)
-  - diff_to_vocab only processes 'replace' opcodes from SequenceMatcher — 'insert' and 'delete' are not useful for vocab accumulation
-  - copy.deepcopy(vocab) ensures immutability — new vocab dict returned, input never mutated
-  - save_vocab uses Path.rename() for atomic write (no os.rename needed since VOCAB_PATH is already a Path)
----
-
-## 2026-03-08 - US-005
-- Integrated ssh-claude framework into ASRDaemon pipeline
-- PostProcessorLoader.load_post_processor() returns None for framework='ssh-claude'
-- haiku-expand guard placed BEFORE try block (CRITIC-R4-C1) — raises ValueError that propagates to daemon handler
-- haiku-expand sends "not implemented" notification, no contradictory success notification (CRITIC-R3-L2)
-- Vocab loaded once in load_post_processor() and cached as self._vocab
-- _post_process() pipeline: regex fillers → auto-punctuation → glossary regex → SSH Haiku → vocab accumulation → LLM
-- Created tests/test_integration_ssh_claude.py (19 tests, all passing)
-- Files changed: post_processor_configs.py, voice_input.py, tests/test_integration_ssh_claude.py
-- **Learnings for future iterations:**
-  - Lazy imports inside _post_process() create local names — must mock at post_processor_configs module level, not voice_input module level
-  - haiku-expand detection: check `preset.get("config")` emptiness (empty dict = not implemented)
-  - The inner except in load_post_processor() catches all exceptions; to propagate errors, checks must be placed BEFORE the try block
----
-
-## 2026-03-08 - US-006
-- Added SSH ControlMaster documentation to README.md (ControlMaster auto, ControlPath, ControlPersist 600)
-- Added haiku-fix post-processor documentation section
-- Updated CLI command examples to list haiku-fix
-- Verified voice-input status already shows post-processor name (get_post_processor command)
-- Created tests/test_ssh_controlmaster_docs.py (8 tests, all passing)
-- Files changed: README.md, tests/test_ssh_controlmaster_docs.py
-- **Learnings for future iterations:**
-  - show_status() already queries get_post_processor and displays post-processor name — no code change needed
-  - README tests verify content presence, useful for documentation-focused stories
----
-
-## 2026-03-08 - E2E Test Fixes (post US-006)
-- Fixed test_e2e_virtual_ssh.py: diff_to_vocab no-change test used `is` (identity) but implementation returns deepcopy (correct per immutability contract); changed to `== / is not`
-- Fixed test_e2e_ssh_chain.py: test_vocab_roundtrip took (original, polished) as params — pytest treated them as missing fixtures; added module-scoped fixture wrapping test_ssh_correction
-- All E2E tests pass: 27 virtual + 3 SSH chain = 30 total
-- L1 Real E2E (test_e2e_ssh_haiku.py) requires daemon+Kitty+audio — manual testing only
-- **Learnings for future iterations:**
-  - E2E test scripts designed for `__main__` sequential chaining need pytest fixtures for inter-test data flow
-  - `assert x is y` checks identity, `assert x == y` checks equality — deepcopy always returns new object
----
-
-## 2026-03-09 - US-007
-- Created vertex_proxy.py: self-contained Vertex AI Gemini proxy script for Oracle Cloud
-- Reads JSON from stdin (system_prompt, user_input, model, region), calls Gemini 2.5 Flash
-- Uses google-genai SDK: genai.Client(vertexai=True) with ADC authentication
-- SDK param mapping: JSON "system_prompt" → SDK "system_instruction", JSON "user_input" → SDK "contents"
-- Lazy SDK imports: --help works without google-genai installed, --test validates ADC via models.list()
-- Guards: response.text None → stderr + exit 1, missing user_input, invalid JSON, unknown args
-- warnings.filterwarnings('ignore') before google imports to suppress stderr pollution
-- Files changed: vertex_proxy.py (new)
-- **Learnings for future iterations:**
-  - google-genai SDK is not installed locally (only on Oracle) — must use lazy imports for any flags that should work without SDK
-  - genai.Client() init is lazy (succeeds even with expired credentials) — use client.models.list() for true ADC validation
-  - 16 pre-existing test failures from uncommitted prompt migration (system_prompt → system_prompt_file) — not related to US-007
----
-
-## 2026-03-09 - US-008
-- Added gemini-fix preset to post_processor_presets.py (framework=vertex-ai, Gemini 2.5 Flash)
-- Created prompts/gemini-fix-system.txt (copy of haiku-fix without /no_think)
-- Added process_with_vertex_ai() to post_processor_configs.py — same interface and guards as process_with_ssh_claude()
-- Uses JSON stdin to vertex_proxy.py (avoids shell escaping issues unlike haiku-fix CLI args)
-- PostProcessorLoader returns None for framework='vertex-ai'
-- Files changed: post_processor_presets.py, post_processor_configs.py, prompts/gemini-fix-system.txt (new)
-- **Learnings for future iterations:**
-  - JSON stdin is cleaner than CLI args for passing Chinese text + long prompts (no shlex.quote needed)
-  - Prompt files already existed in install dir from previous adversarial review testing
-  - gemini-fix shares user_prompt_template_file with haiku-fix (prompts/haiku-fix-user.txt)
----
-
-## 2026-03-09 - US-009
-- Extended vocab loading in load_post_processor() to handle vertex-ai framework
-- Refactored _post_process() with dispatch dict: {"ssh-claude": process_with_ssh_claude, "vertex-ai": process_with_vertex_ai}
-- Dispatch dict defined AFTER import (CRITIC-R7-C1) to avoid NameError
-- Updated docstring to mention vertex-ai alongside ssh-claude
+## 2026-03-12 - US-006
+- Wired dual ASR fusion into ASRDaemon._handle_transcribe() and _post_process()
+- _handle_transcribe: runs self._secondary_model.transcribe() on same audio, stores result in self._last_secondary_text
+- Secondary failure: logs warning, sets _last_secondary_text=None, continues with primary only
+- _post_process for vertex-ai-merge: filler_removal → FireRedPunc → apply_vocab → gemini_merge(primary, secondary) → diff_to_vocab → save_vocab
+- Secondary text NOT processed through filler removal or FireRedPunc (Whisper has built-in punctuation)
+- Dispatch updated: vertex-ai-merge uses process_with_gemini_merge, others use dispatch dict
 - Files changed: voice_input.py
 - **Learnings for future iterations:**
-  - Dispatch dict pattern eliminates code duplication for frameworks sharing identical pipelines
-  - Dict must be defined AFTER the import block, not before (CRITIC-R7-C1)
-  - `in ("ssh-claude", "vertex-ai")` for if-condition, then dict inside the block
+  - getattr guards needed for _last_secondary_text too (tests use __new__)
+  - process_with_gemini_merge imported lazily inside _post_process (same pattern as other imports)
 ---
 
-## 2026-03-09 - US-010
-- Created tests/test_vertex_ai.py: 22 tests (unit guards, JSON stdin, command construction, hallucination, preset, integration dispatch)
-- Added 8 virtual E2E tests to test_e2e_virtual_ssh.py (vertex preset structure, guards, hallucination)
-- Created tests/test_e2e_vertex_chain.py: L2 Real SSH test (correction + vocab roundtrip)
-- Updated e2e_features.json: 7 new feature entries
-- Deployed vertex_proxy.py to Oracle via scp, verified SDK import (google-genai 1.66.0)
-- Total test results: 134 passed, 1 pre-existing failure (system_prompt→system_prompt_file migration)
-- Files changed: tests/test_vertex_ai.py (new), tests/test_e2e_virtual_ssh.py, tests/test_e2e_vertex_chain.py (new), tests/e2e_features.json
+## 2026-03-12 - US-005
+- Added 'gemini-merge' preset to POST_PROCESSOR_PRESETS with framework='vertex-ai-merge'
+- Added 'vertex-ai-merge' case to PostProcessorLoader.load_post_processor() (returns None)
+- Config mirrors gemini-fix (same ssh_host, proxy_script, model, region, timeouts)
+- Files changed: post_processor_presets.py, post_processor_configs.py
 - **Learnings for future iterations:**
-  - RequestsDependencyWarning on Oracle confirms warnings.filterwarnings('ignore') is essential
-  - L2 Real tests need higher timeout (20s) for Vertex AI cold start
-  - Test min_text_len: input text must be >= min_text_len for SSH to fire (use "a" * 50)
-  - Python 3.10 EOL Oct 2026 — plan Ubuntu 24.04 upgrade
+  - test_post_processor_presets.py has 7 pre-existing failures (system_prompt key → system_prompt_file migration)
+  - CLI 'voice-input post-processor gemini-merge' works automatically (iterates POST_PROCESSOR_PRESETS keys)
+---
+
+## 2026-03-12 - US-004
+- Created prompts/gemini-merge-system.txt — dual-purpose prompt (merge two ASR outputs or polish single input)
+- Added process_with_gemini_merge() in post_processor_configs.py
+- Same SSH+vertex_proxy.py mechanism as process_with_vertex_ai
+- Handles both dual-input (Chinese ASR + English ASR) and single-input fallback (Chinese ASR only)
+- All guards: min_text_len, max_text_len, hallucination (2x), question mark, timeout
+- Files changed: prompts/gemini-merge-system.txt (new), post_processor_configs.py
+- **Learnings for future iterations:**
+  - prompts/ directory is shared between repo and install dir (same filesystem)
+  - User input format for dual: "Chinese ASR: {primary}\nEnglish ASR: {secondary}"
+  - Single fallback: "Chinese ASR: {primary}" — prompt handles this via "如果只提供了一个转录结果" instruction
+---
+
+## 2026-03-12 - US-003
+- Added _secondary_model and _last_secondary_text to ASRDaemon.__init__
+- Added _load_secondary_model() — loads faster-whisper (CPU, large-v3-turbo, int8), non-fatal on failure
+- Added _unload_secondary_model() — uses getattr for safety with __new__-constructed test instances
+- Hooked into load_post_processor(): loads secondary model for vertex-ai-merge, unloads for others
+- Also loads vocab for vertex-ai-merge framework (alongside ssh-claude and vertex-ai)
+- Files changed: voice_input.py
+- **Learnings for future iterations:**
+  - Tests use `ASRDaemon.__new__(ASRDaemon)` to bypass __init__ — new attrs need `getattr(self, 'attr', None)` guards
+  - test_pipeline_accumulates_vocab_on_change is pre-existing failure (reads real vocab from disk without mocking load_vocab)
+  - _load_secondary_model imports WhisperModel inside method to avoid import-time failures
+---
+
+## 2026-03-12 - US-002
+- Added 'faster-whisper' entry to MODEL_PRESETS in model_presets.py
+- Fixed test_model_configs.py: added 'faster-whisper' to valid frameworks, replaced removed qwen2-audio tests with faster-whisper tests
+- Files changed: model_presets.py, tests/test_model_configs.py
+- **Learnings for future iterations:**
+  - 3 pre-existing test failures were from removed qwen2-audio model — fixed by updating tests to match current presets
+  - Preset pattern: framework, punctuation, force_cpu, config dict with model-specific params
+  - All 8 tests pass, 4 skipped (require model files)
+---
+
+## 2026-03-12 - US-001
+- Implemented faster-whisper framework in ModelLoader and ModelInference
+- Files changed: model_configs.py
+- **Learnings for future iterations:**
+  - `WhisperModel(model_size, device='cpu', compute_type='int8')` is the constructor pattern
+  - Language parameter deliberately NOT set — auto-detection handles mixed Chinese-English better
+  - Import wrapped in try/except to give clear install instructions if faster-whisper missing
+  - 3 pre-existing test failures in test_model_configs.py (not related to this change)
 ---
