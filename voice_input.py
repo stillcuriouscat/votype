@@ -950,29 +950,34 @@ class ASRDaemon:
                 _log("PUNC", f"FAILED: {e}")
 
         # Step 3: SSH-based post-processing (glossary regex + LLM polish + vocab accumulation)
-        if result and self.post_processor_framework in ("ssh-claude", "vertex-ai"):
+        if result and self.post_processor_framework in ("ssh-claude", "vertex-ai", "vertex-ai-merge"):
             from post_processor_configs import (
                 apply_vocab, glossary_context, load_vocab,
                 process_with_ssh_claude,
-                process_with_vertex_ai, diff_to_vocab, save_vocab,
+                process_with_vertex_ai, process_with_gemini_merge,
+                diff_to_vocab, save_vocab,
             )
-            # Dispatch dict defined AFTER import (CRITIC-R7-C1)
-            process_fn = {
-                "ssh-claude": process_with_ssh_claude,
-                "vertex-ai": process_with_vertex_ai,
-            }[self.post_processor_framework]
 
             preset = POST_PROCESSOR_PRESETS[self.current_post_processor_id]
             config = preset["config"]
             min_count = config.get("vocab_min_count", 3)
 
-            # Glossary regex replacement
+            # Glossary regex replacement + vocab context
             result = apply_vocab(result, self._vocab, min_count)
-
-            # LLM polish with glossary context
             glossary_ctx = glossary_context(self._vocab)
             before_polish = result
-            result = process_fn(result, config, glossary_ctx)
+
+            if self.post_processor_framework == "vertex-ai-merge":
+                # Dual ASR fusion: primary processed text + raw secondary text → Gemini merge
+                secondary = getattr(self, '_last_secondary_text', None)
+                result = process_with_gemini_merge(result, secondary, config, glossary_ctx)
+            else:
+                # Single-ASR polish (ssh-claude or vertex-ai)
+                process_fn = {
+                    "ssh-claude": process_with_ssh_claude,
+                    "vertex-ai": process_with_vertex_ai,
+                }[self.post_processor_framework]
+                result = process_fn(result, config, glossary_ctx)
 
             # Vocab accumulation (only if LLM changed something)
             if before_polish != result:
@@ -1025,9 +1030,24 @@ class ASRDaemon:
         Note: does NOT set idle status — the CLI process sends set_idle
         after type_text() completes, so the icon stays orange during the
         entire pipeline (ASR → post-process → paste).
+
+        When secondary ASR model is loaded (gemini-merge mode), runs both
+        primary and secondary transcription on the same audio file.
         """
         self.set_status("processing")
+        audio_path = msg.get("data")
         response = self.transcribe(msg.get("data"))
+
+        # Run secondary ASR if available (for dual fusion)
+        if getattr(self, '_secondary_model', None) is not None and audio_path:
+            try:
+                segments, _info = self._secondary_model.transcribe(audio_path)
+                self._last_secondary_text = "".join(seg.text for seg in segments)
+                _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
+            except Exception as e:
+                logging.warning(f"Secondary ASR failed: {e}")
+                self._last_secondary_text = None
+
         if response and "text" in response and response["text"]:
             _log("ASR", f"raw: {response['text'][:120]}")
             response["text"] = self._post_process(response["text"])
