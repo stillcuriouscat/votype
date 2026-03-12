@@ -652,6 +652,9 @@ class PostProcessorLoader:
         if framework == "vertex-ai":
             return None  # No model needed; SSH+proxy calls handled in _post_process()
 
+        if framework == "vertex-ai-merge":
+            return None  # No model needed; SSH+proxy calls handled in _post_process()
+
         if framework == "llama-cpp":
             try:
                 return cls.load_llama_model(preset["config"])

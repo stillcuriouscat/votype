@@ -97,6 +97,22 @@ POST_PROCESSOR_PRESETS = {
             "user_prompt_template_file": "prompts/haiku-fix-user.txt",
         },
     },
+    "gemini-merge": {
+        "name": "Gemini Merge (Dual ASR)",
+        "description": "Merge FireRedASR + faster-whisper via Gemini 2.5 Flash for best Chinese-English accuracy",
+        "framework": "vertex-ai-merge",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/vertex_proxy.py",
+            "model": "gemini-2.5-flash",
+            "vertex_region": "us-central1",
+            "timeout": 15,
+            "min_text_len": 45,
+            "max_text_len": 200,
+            "vocab_min_count": 3,
+            "system_prompt_file": "prompts/gemini-merge-system.txt",
+        },
+    },
 }
 
 # Default post-processor (regex only, no LLM overhead)
