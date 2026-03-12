@@ -618,6 +618,8 @@ class ASRDaemon:
         self.post_processor_framework = None
         self.punc_model = None  # Auto-punctuation model (separate from post-processor)
         self._vocab = {}  # Glossary vocab for ssh-claude (loaded in load_post_processor)
+        self._secondary_model = None  # Secondary ASR model (faster-whisper for dual fusion)
+        self._last_secondary_text = None  # Last secondary ASR transcription result
 
     @staticmethod
     def _restore_post_processor_id():
@@ -837,6 +839,43 @@ class ASRDaemon:
             self.punc_model = None
             _log("PUNC", f"no punctuation for {self.current_model_id}")
 
+    def _load_secondary_model(self):
+        """Load faster-whisper as secondary ASR model for dual fusion.
+
+        Non-fatal: if loading fails, secondary_model stays None and fusion
+        degrades gracefully to single-ASR mode.
+        """
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            logging.warning(
+                "faster-whisper not installed, secondary ASR unavailable. "
+                "Install with: pip install faster-whisper"
+            )
+            self._secondary_model = None
+            return
+
+        try:
+            logging.info("Loading secondary ASR model (faster-whisper large-v3-turbo, CPU, int8)...")
+            print("  Loading secondary ASR: faster-whisper (CPU, int8)...")
+            self._secondary_model = WhisperModel(
+                "large-v3-turbo", device="cpu", compute_type="int8"
+            )
+            _log("SECONDARY", "faster-whisper loaded successfully")
+            print("  Secondary ASR ready: faster-whisper")
+        except Exception as e:
+            logging.warning(f"Failed to load secondary ASR model: {e}")
+            print(f"  Secondary ASR failed: {e}")
+            self._secondary_model = None
+
+    def _unload_secondary_model(self):
+        """Unload secondary ASR model to free memory."""
+        if getattr(self, '_secondary_model', None) is not None:
+            self._secondary_model = None
+            self._last_secondary_text = None
+            _log("SECONDARY", "unloaded secondary ASR model")
+            print("  Secondary ASR unloaded")
+
     def load_post_processor(self, preset_id=None):
         """Load a post-processor model."""
         if preset_id is None:
@@ -863,10 +902,15 @@ class ASRDaemon:
             self._persist_post_processor_id(preset_id)
             self.post_processor_framework = preset["framework"]
             # Load vocab once for SSH-based frameworks (cached on instance)
-            if self.post_processor_framework in ("ssh-claude", "vertex-ai"):
+            if self.post_processor_framework in ("ssh-claude", "vertex-ai", "vertex-ai-merge"):
                 from post_processor_configs import load_vocab
                 self._vocab = load_vocab()
                 _log("PP-LOAD", f"vocab loaded: {len(self._vocab)} terms")
+            # Load/unload secondary ASR model based on post-processor
+            if self.post_processor_framework == "vertex-ai-merge":
+                self._load_secondary_model()
+            else:
+                self._unload_secondary_model()
             _log("PP-LOAD", f"loaded: {preset['name']} ({preset_id})")
             print(f"  Post-processor ready: {preset['name']}")
             print(f"{'='*60}\n")
@@ -878,6 +922,7 @@ class ASRDaemon:
             self.post_processor_model = None
             self.current_post_processor_id = "none"
             self.post_processor_framework = "regex"
+            self._unload_secondary_model()
             print("  Falling back to regex-only mode")
 
     def _post_process(self, text):
