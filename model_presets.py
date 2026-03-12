@@ -60,6 +60,19 @@ MODEL_PRESETS = {
             "modelscope_id": "pengzhendong/FireRedASR-AED-L",
         },
     },
+
+    # ===== faster-whisper framework models =====
+    "faster-whisper": {
+        "name": "Faster-Whisper",
+        "description": "Whisper large-v3-turbo, strong English recognition, CPU-only (int8)",
+        "framework": "faster-whisper",
+        "punctuation": "builtin",
+        "force_cpu": True,
+        "config": {
+            "model_size": "large-v3-turbo",
+            "compute_type": "int8",
+        },
+    },
 }
 
 # Default model

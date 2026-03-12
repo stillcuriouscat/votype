@@ -26,7 +26,7 @@ class TestModelPresets:
 
     def test_framework_types(self):
         """Test framework types are valid"""
-        valid_frameworks = ["funasr", "transformers", "fireredasr"]
+        valid_frameworks = ["funasr", "transformers", "fireredasr", "faster-whisper"]
 
         for model_id, preset in MODEL_PRESETS.items():
             framework = preset["framework"]
@@ -34,19 +34,19 @@ class TestModelPresets:
                 f"Model {model_id} has invalid framework: {framework}"
 
     def test_new_models_exist(self):
-        """Test new models are added to configuration"""
-        assert "qwen2-audio" in MODEL_PRESETS, "Qwen2-Audio model not found"
+        """Test expected models are in configuration"""
         assert "firered-asr" in MODEL_PRESETS, "FireRedASR model not found"
+        assert "faster-whisper" in MODEL_PRESETS, "faster-whisper model not found"
 
-    def test_qwen2_audio_config(self):
-        """Test Qwen2-Audio configuration is correct"""
-        preset = MODEL_PRESETS["qwen2-audio"]
+    def test_faster_whisper_config(self):
+        """Test faster-whisper configuration is correct"""
+        preset = MODEL_PRESETS["faster-whisper"]
 
-        assert preset["framework"] == "transformers"
-        assert "model_id" in preset["config"]
-        assert "Qwen/Qwen2-Audio-7B" in preset["config"]["model_id"]
-        # Uses chat template format, check generate_kwargs exists
-        assert "generate_kwargs" in preset
+        assert preset["framework"] == "faster-whisper"
+        assert preset["punctuation"] == "builtin"
+        assert preset.get("force_cpu") is True
+        assert preset["config"]["model_size"] == "large-v3-turbo"
+        assert preset["config"]["compute_type"] == "int8"
 
     def test_firered_asr_config(self):
         """Test FireRedASR configuration is correct"""
