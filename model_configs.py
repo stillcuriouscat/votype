@@ -159,6 +159,28 @@ class ModelLoader:
         use_gpu = device.startswith("cuda") and torch.cuda.is_available()
         return model, use_gpu
 
+    @staticmethod
+    def load_faster_whisper_model(config: Dict[str, Any], device: str = "cpu") -> Any:
+        """Load a faster-whisper model (WhisperModel).
+
+        Returns:
+            WhisperModel instance (CPU-only, int8 quantization).
+        """
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            raise ImportError(
+                "faster-whisper is not installed. Install it with: "
+                "pip install faster-whisper"
+            )
+
+        model_size = config.get("model_size", "large-v3-turbo")
+        compute_type = config.get("compute_type", "int8")
+
+        logging.info(f"Loading faster-whisper model: {model_size} (compute_type={compute_type}, device={device})")
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        return model
+
     @classmethod
     def load_model(cls, model_id: str, device: str = DEVICE) -> tuple:
         """
@@ -193,6 +215,10 @@ class ModelLoader:
         elif framework == "fireredasr":
             model, use_gpu = cls.load_fireredasr_model(config, actual_device)
             return model, framework, {"use_gpu": use_gpu}
+
+        elif framework == "faster-whisper":
+            model = cls.load_faster_whisper_model(config, actual_device)
+            return model, framework, None
 
         else:
             raise ValueError(f"Unknown framework: {framework}")
@@ -429,6 +455,16 @@ class ModelInference:
                 Path(chunk_path).unlink(missing_ok=True)
         return "".join(texts)
 
+    @staticmethod
+    def transcribe_faster_whisper(model: Any, audio_path: str) -> str:
+        """Faster-whisper framework inference.
+
+        model.transcribe() returns (Iterable[Segment], TranscriptionInfo).
+        Language auto-detected (not forced) to handle mixed Chinese-English.
+        """
+        segments, _info = model.transcribe(audio_path)
+        return "".join(segment.text for segment in segments)
+
     @classmethod
     def transcribe(
         cls,
@@ -463,6 +499,9 @@ class ModelInference:
             elif framework == "fireredasr":
                 use_gpu = extra_data.get("use_gpu", False) if extra_data else False
                 return cls.transcribe_fireredasr(model, audio_path, use_gpu=use_gpu)
+
+            elif framework == "faster-whisper":
+                return cls.transcribe_faster_whisper(model, audio_path)
 
             else:
                 raise ValueError(f"Unknown framework: {framework}")
