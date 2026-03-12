@@ -224,11 +224,22 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
 
     output = result.stdout.strip()
 
-    # Hallucination guard: output > 5x input length is suspicious
-    if len(output) > len(text) * 5:
+    # Hallucination guard: editor output should not be much longer than input.
+    # Legitimate edits add punctuation/spaces but remove fillers → roughly same length.
+    # If output > 2x input, LLM likely "replied" instead of editing.
+    if len(output) > len(text) * 2:
         logging.warning(
             f"SSH Claude output too long ({len(output)} vs input {len(text)}), "
             "possible hallucination, using original text"
+        )
+        return text
+
+    # Question guard: if input contains '？' but output doesn't,
+    # the LLM likely answered the question instead of editing it.
+    if '？' in text and '？' not in output and '?' not in output:
+        logging.warning(
+            "SSH Claude dropped question marks — likely answered instead of editing, "
+            "using original text"
         )
         return text
 
@@ -318,13 +329,129 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
 
     output = result.stdout.strip()
 
-    # Hallucination guard: output > 5x input length is suspicious
-    if len(output) > len(text) * 5:
+    # Hallucination guard: editor output should not be much longer than input.
+    # Legitimate edits add punctuation/spaces but remove fillers → roughly same length.
+    # If output > 2x input, LLM likely "replied" instead of editing.
+    if len(output) > len(text) * 2:
         logging.warning(
             f"Vertex AI output too long ({len(output)} vs input {len(text)}), "
             "possible hallucination, using original text"
         )
         return text
+
+    # Question guard: if input contains '？' but output doesn't,
+    # the LLM likely answered the question instead of editing it.
+    if '？' in text and '？' not in output and '?' not in output:
+        logging.warning(
+            "Vertex AI dropped question marks — likely answered instead of editing, "
+            "using original text"
+        )
+        return text
+
+    return output
+
+
+def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx=""):
+    """Merge two ASR transcriptions via Vertex AI Gemini.
+
+    Sends primary (FireRedASR) and secondary (faster-whisper) transcriptions
+    to Gemini for intelligent merging. Falls back to single-text polish
+    when secondary_text is None.
+
+    Uses the same SSH + vertex_proxy.py mechanism as process_with_vertex_ai.
+
+    Args:
+        primary_text: Primary ASR (FireRedASR) transcription.
+        secondary_text: Secondary ASR (faster-whisper) transcription, or None.
+        config: Preset config dict with ssh_host, proxy_script, model, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Merged/polished text on success, primary_text on any failure.
+    """
+    # Empty text: return immediately
+    if not primary_text:
+        return ""
+
+    # Text too short: skip SSH call (not worth the latency)
+    min_text_len = config.get("min_text_len", 45)
+    if len(primary_text) < min_text_len:
+        logging.info(f"Text length {len(primary_text)} below min_text_len {min_text_len}, skipping merge")
+        return primary_text
+
+    # Text too long: skip SSH call
+    max_text_len = config.get("max_text_len", 200)
+    if len(primary_text) > max_text_len:
+        logging.info(f"Text length {len(primary_text)} exceeds max_text_len {max_text_len}, skipping merge")
+        return primary_text
+
+    # Load system prompt from file
+    if "system_prompt_file" in config:
+        prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+        system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+    else:
+        system_prompt = config.get("system_prompt", "")
+    if glossary_ctx:
+        system_prompt += "\n\n" + glossary_ctx
+
+    # Build user input: dual or single format
+    if secondary_text is not None:
+        user_input = f"Chinese ASR: {primary_text}\nEnglish ASR: {secondary_text}"
+    else:
+        user_input = f"Chinese ASR: {primary_text}"
+
+    # Build SSH command to call vertex_proxy.py on Oracle
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        "python3", config["proxy_script"],
+    ]
+
+    # JSON stdin avoids all shell escaping issues
+    stdin_data = json.dumps({
+        "system_prompt": system_prompt,
+        "user_input": user_input,
+        "model": config.get("model", "gemini-2.5-flash"),
+        "region": config.get("vertex_region", "us-central1"),
+    }, ensure_ascii=False)
+
+    timeout = config.get("timeout", 15)
+
+    try:
+        result = subprocess.run(
+            cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Gemini merge timed out after {timeout}s")
+        from voice_input import notify
+        notify("Votype", f"Gemini merge timed out after {timeout}s", urgency="low")
+        return primary_text
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "unknown error"
+        logging.error(f"Gemini merge failed (exit {result.returncode}): {stderr}")
+        from voice_input import notify
+        notify("Votype", f"Gemini merge error: {stderr[:100]}", urgency="low")
+        return primary_text
+
+    output = result.stdout.strip()
+
+    # Hallucination guard: output should not be much longer than input
+    if len(output) > len(primary_text) * 2:
+        logging.warning(
+            f"Gemini merge output too long ({len(output)} vs input {len(primary_text)}), "
+            "possible hallucination, using original text"
+        )
+        return primary_text
+
+    # Question guard: if input contains '？' but output doesn't,
+    # the LLM likely answered the question instead of editing it
+    if '？' in primary_text and '？' not in output and '?' not in output:
+        logging.warning(
+            "Gemini merge dropped question marks — likely answered instead of editing, "
+            "using original text"
+        )
+        return primary_text
 
     return output
 
