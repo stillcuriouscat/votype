@@ -23,7 +23,6 @@ BASE_CONFIG = {
     "vertex_region": "us-central1",
     "timeout": 15,
     "min_text_len": 45,
-    "max_text_len": 200,
     "vocab_min_count": 3,
     "system_prompt": "You are an ASR correction tool.",
 }
@@ -101,7 +100,7 @@ class TestProcessWithVertexAiSuccess:
 
 
 class TestProcessWithVertexAiGuards:
-    """Tests for empty text, min/max length, and hallucination guards."""
+    """Tests for empty text, min length, and hallucination guards."""
 
     @patch("post_processor_configs.subprocess.run")
     def test_empty_text_returns_empty(self, mock_run):
@@ -115,21 +114,6 @@ class TestProcessWithVertexAiGuards:
         result = process_with_vertex_ai(short_text, BASE_CONFIG)
         assert result == short_text
         mock_run.assert_not_called()
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_text_exceeding_max_len_returns_original(self, mock_run):
-        long_text = "a" * 201
-        result = process_with_vertex_ai(long_text, BASE_CONFIG)
-        assert result == long_text
-        mock_run.assert_not_called()
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_text_at_max_len_still_processed(self, mock_run):
-        """Text exactly at max_text_len should be processed."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="output", stderr="")
-        text = "a" * 200
-        process_with_vertex_ai(text, BASE_CONFIG)
-        mock_run.assert_called_once()
 
 
 class TestProcessWithVertexAiErrors:
@@ -216,7 +200,6 @@ class TestGeminiFixPreset:
         assert config["vertex_region"] == "us-central1"
         assert config["timeout"] == 15
         assert config["min_text_len"] == 45
-        assert config["max_text_len"] == 200
         assert config["vocab_min_count"] == 3
 
     def test_gemini_fix_prompt_file(self):

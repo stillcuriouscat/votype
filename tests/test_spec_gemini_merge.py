@@ -23,7 +23,6 @@ MERGE_CONFIG = {
     "vertex_region": "us-central1",
     "timeout": 15,
     "min_text_len": 45,
-    "max_text_len": 200,
     "vocab_min_count": 3,
     "system_prompt": "You are a merge editor.",  # inline — avoids file I/O
 }
@@ -178,32 +177,6 @@ class TestGeminiMergeGuards:
 
         result = process_with_gemini_merge(short, "secondary", MERGE_CONFIG)
         assert result == short
-
-    def test_primary_above_max_len_returns_primary(self):
-        """BT#7: primary above max_text_len → return primary."""
-        from post_processor_configs import process_with_gemini_merge
-
-        long_text = _text(201)
-        assert len(long_text) > MERGE_CONFIG["max_text_len"]
-
-        result = process_with_gemini_merge(long_text, "secondary", MERGE_CONFIG)
-        assert result == long_text
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_primary_at_exactly_max_len_calls_ssh(self, mock_run):
-        """BT#8: primary at exactly max_text_len → SSH IS called."""
-        from post_processor_configs import process_with_gemini_merge
-
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="output", stderr=""
-        )
-        exact = _text(200)
-        assert len(exact) == MERGE_CONFIG["max_text_len"]
-
-        result = process_with_gemini_merge(exact, None, MERGE_CONFIG)
-
-        mock_run.assert_called_once()
-        assert result == "output"
 
     @patch("post_processor_configs.subprocess.run")
     def test_primary_at_exactly_min_len_calls_ssh(self, mock_run):
@@ -461,10 +434,6 @@ class TestGeminiMergePreset:
     def test_min_text_len(self):
         """BT#9."""
         assert self.config["min_text_len"] == 45
-
-    def test_max_text_len(self):
-        """BT#10."""
-        assert self.config["max_text_len"] == 200
 
     def test_vocab_min_count(self):
         """BT#11."""

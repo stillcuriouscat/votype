@@ -33,7 +33,6 @@ MERGE_CONFIG = {
     "vertex_region": "us-central1",
     "timeout": 15,
     "min_text_len": 45,
-    "max_text_len": 200,
     "vocab_min_count": 3,
     "system_prompt_file": "prompts/gemini-merge-system.txt",
 }
@@ -97,7 +96,6 @@ class TestGeminiMergePreset:
             "vertex_region",
             "timeout",
             "min_text_len",
-            "max_text_len",
             "vocab_min_count",
             "system_prompt_file",
         }
@@ -225,12 +223,6 @@ class TestGeminiMergeGuards:
         short_text = "short"  # well below 45
         result = process_with_gemini_merge(short_text, SECONDARY_TEXT, MERGE_CONFIG)
         assert result == short_text
-
-    def test_primary_above_max_len_returns_primary(self):
-        """LLD: len(primary_text) > max_text_len -> return primary_text."""
-        long_text = "x" * 201  # above 200
-        result = process_with_gemini_merge(long_text, SECONDARY_TEXT, MERGE_CONFIG)
-        assert result == long_text
 
     @patch("post_processor_configs.subprocess.run")
     def test_hallucination_guard_returns_primary(self, mock_run, mock_prompt_dir):

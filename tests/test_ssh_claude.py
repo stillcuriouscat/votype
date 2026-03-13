@@ -19,7 +19,6 @@ BASE_CONFIG = {
     "claude_path": "/home/ubuntu/.local/bin/claude",
     "model": "claude-haiku-4-5-20251001",
     "timeout": 15,
-    "max_text_len": 200,
     "vocab_min_count": 3,
     "system_prompt": "You are an ASR correction tool.",
 }
@@ -90,29 +89,14 @@ class TestProcessWithSshClaudeSuccess:
         assert "Commonly used terms" not in system_prompt_arg
 
 
-class TestProcessWithSshClaudeEmptyAndLong:
-    """Tests for empty text and text exceeding max length."""
+class TestProcessWithSshClaudeEmptyText:
+    """Tests for empty text guard."""
 
     @patch("post_processor_configs.subprocess.run")
     def test_empty_text_returns_empty(self, mock_run):
         result = process_with_ssh_claude("", BASE_CONFIG)
         assert result == ""
         mock_run.assert_not_called()
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_text_exceeding_max_len_returns_original(self, mock_run):
-        long_text = "a" * 201
-        result = process_with_ssh_claude(long_text, BASE_CONFIG)
-        assert result == long_text
-        mock_run.assert_not_called()
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_text_at_max_len_still_processed(self, mock_run):
-        """Text exactly at max_text_len should be processed."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="output", stderr="")
-        text = "a" * 200
-        process_with_ssh_claude(text, BASE_CONFIG)
-        mock_run.assert_called_once()
 
 
 class TestProcessWithSshClaudeErrors:

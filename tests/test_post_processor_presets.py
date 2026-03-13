@@ -78,10 +78,6 @@ class TestHaikuFixPreset:
         config = POST_PROCESSOR_PRESETS["haiku-fix"]["config"]
         assert config["timeout"] == 15
 
-    def test_config_max_text_len(self):
-        config = POST_PROCESSOR_PRESETS["haiku-fix"]["config"]
-        assert config["max_text_len"] == 200
-
     def test_config_vocab_min_count(self):
         config = POST_PROCESSOR_PRESETS["haiku-fix"]["config"]
         assert config["vocab_min_count"] == 3

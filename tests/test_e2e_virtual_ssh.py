@@ -5,7 +5,7 @@ Tests pure functions and file I/O without SSH or hardware:
   - apply_vocab: regex replacement (Chinese/English/overlapping)
   - diff_to_vocab: difflib-based correction extraction
   - glossary_context: term list generation
-  - Guard conditions: empty text, too long, hallucination, haiku-expand
+  - Guard conditions: empty text, hallucination, haiku-expand
 
 No SSH, no daemon, no audio, no Kitty required.
 
@@ -24,13 +24,11 @@ E2E features verified:
     - virtual-diff-to-vocab-no-change
     - virtual-glossary-context
     - virtual-empty-text-guard
-    - virtual-text-too-long-guard
     - virtual-hallucination-guard
     - virtual-haiku-expand-not-implemented
     - virtual-preset-structure
     - virtual-vertex-preset-structure
     - virtual-vertex-empty-text-guard
-    - virtual-vertex-text-too-long-guard
     - virtual-vertex-hallucination-guard
 """
 
@@ -86,7 +84,6 @@ class TestPresetStructure:
         assert "claude_path" in config
         assert "model" in config
         assert "timeout" in config
-        assert "max_text_len" in config
         assert "vocab_min_count" in config
         assert "system_prompt" in config
         update_feature("virtual-preset-structure", True)
@@ -395,28 +392,10 @@ class TestGuardConditions:
             "model": "dummy",
             "system_prompt": "dummy",
             "timeout": 15,
-            "max_text_len": 200,
         }
         result = process_with_ssh_claude("", config, "")
         assert result == ""
         update_feature("virtual-empty-text-guard", True)
-
-    def test_text_too_long_returns_original(self):
-        """Text exceeding max_text_len returns original."""
-        from post_processor_configs import process_with_ssh_claude
-
-        config = {
-            "ssh_host": "oracle-cloud",
-            "claude_path": "/dummy",
-            "model": "dummy",
-            "system_prompt": "dummy",
-            "timeout": 15,
-            "max_text_len": 10,
-        }
-        long_text = "This text is definitely longer than 10 characters"
-        result = process_with_ssh_claude(long_text, config, "")
-        assert result == long_text
-        update_feature("virtual-text-too-long-guard", True)
 
 
 class TestHaikuExpandNotImplemented:
@@ -462,7 +441,6 @@ class TestVertexPresetStructure:
         assert config["vertex_region"] == "us-central1"
         assert "timeout" in config
         assert "min_text_len" in config
-        assert "max_text_len" in config
         assert "vocab_min_count" in config
         assert "system_prompt_file" in config
         update_feature("virtual-vertex-preset-structure", True)
@@ -492,29 +470,10 @@ class TestVertexGuardConditions:
             "vertex_region": "us-central1",
             "timeout": 15,
             "min_text_len": 45,
-            "max_text_len": 200,
         }
         result = process_with_vertex_ai("", config, "")
         assert result == ""
         update_feature("virtual-vertex-empty-text-guard", True)
-
-    def test_text_too_long_returns_original(self):
-        """Text exceeding max_text_len returns original."""
-        from post_processor_configs import process_with_vertex_ai
-
-        config = {
-            "ssh_host": "oracle-cloud",
-            "proxy_script": "~/vertex_proxy.py",
-            "model": "gemini-2.5-flash",
-            "vertex_region": "us-central1",
-            "timeout": 15,
-            "min_text_len": 5,
-            "max_text_len": 10,
-        }
-        long_text = "This text is definitely longer than 10 characters"
-        result = process_with_vertex_ai(long_text, config, "")
-        assert result == long_text
-        update_feature("virtual-vertex-text-too-long-guard", True)
 
     def test_hallucination_guard(self):
         """Output > 5x input length is rejected."""
@@ -529,7 +488,6 @@ class TestVertexGuardConditions:
             "system_prompt": "test",
             "timeout": 15,
             "min_text_len": 5,
-            "max_text_len": 200,
         }
         text = "a" * 50  # len 50
         with patch("post_processor_configs.subprocess.run") as mock_run:

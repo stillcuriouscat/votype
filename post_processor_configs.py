@@ -169,11 +169,6 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
         logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
         return text
 
-    # Text too long: skip SSH call
-    max_text_len = config.get("max_text_len", 200)
-    if len(text) > max_text_len:
-        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
-        return text
 
     # Load system prompt from file or inline config
     if "system_prompt_file" in config:
@@ -270,11 +265,6 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
         logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
         return text
 
-    # Text too long: skip SSH call
-    max_text_len = config.get("max_text_len", 200)
-    if len(text) > max_text_len:
-        logging.info(f"Text length {len(text)} exceeds max_text_len {max_text_len}, skipping SSH")
-        return text
 
     # Load system prompt from file or inline config
     if "system_prompt_file" in config:
@@ -379,11 +369,6 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
         logging.info(f"Text length {len(primary_text)} below min_text_len {min_text_len}, skipping merge")
         return primary_text
 
-    # Text too long: skip SSH call
-    max_text_len = config.get("max_text_len", 200)
-    if len(primary_text) > max_text_len:
-        logging.info(f"Text length {len(primary_text)} exceeds max_text_len {max_text_len}, skipping merge")
-        return primary_text
 
     # Load system prompt from file
     if "system_prompt_file" in config:

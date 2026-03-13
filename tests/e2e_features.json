@@ -1,6 +1,6 @@
 {
   "project": "votype",
-  "last_run": "2026-03-10T12:05:24",
+  "last_run": "2026-03-13T19:21:45",
   "features": [
     {
       "id": "real-e2e-ssh-haiku-pipeline",
@@ -139,14 +139,6 @@
       "blocking": false
     },
     {
-      "id": "virtual-text-too-long-guard",
-      "layer": "L2-virtual",
-      "description": "Text exceeding max_text_len returns original without SSH call",
-      "passes": true,
-      "last_error": null,
-      "blocking": false
-    },
-    {
       "id": "virtual-hallucination-guard",
       "layer": "L2-virtual",
       "description": "Output > 5x input length is rejected, original text returned",
@@ -182,14 +174,6 @@
       "id": "virtual-vertex-empty-text-guard",
       "layer": "L2-virtual",
       "description": "process_with_vertex_ai returns empty string for empty input without SSH call",
-      "passes": true,
-      "last_error": null,
-      "blocking": false
-    },
-    {
-      "id": "virtual-vertex-text-too-long-guard",
-      "layer": "L2-virtual",
-      "description": "process_with_vertex_ai returns original for text exceeding max_text_len",
       "passes": true,
       "last_error": null,
       "blocking": false

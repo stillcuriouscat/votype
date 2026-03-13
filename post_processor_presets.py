@@ -64,7 +64,7 @@ POST_PROCESSOR_PRESETS = {
             "model": "claude-haiku-4-5-20251001",
             "timeout": 15,
             "min_text_len": 45,
-            "max_text_len": 200,
+
             "vocab_min_count": 3,
             # Prompt files adapted from voxy (github.com/hahagood/voxy)
             # Custom terms injected at runtime via glossary_context()
@@ -89,7 +89,7 @@ POST_PROCESSOR_PRESETS = {
             "vertex_region": "us-central1",
             "timeout": 15,
             "min_text_len": 45,
-            "max_text_len": 200,
+
             "vocab_min_count": 3,
             # Prompt file: copy of haiku-fix-system.txt without /no_think (Claude-specific)
             # Gemini needs larger initial glossary for proper nouns (e.g. 克劳德→Claude not Cloud)
@@ -108,7 +108,7 @@ POST_PROCESSOR_PRESETS = {
             "vertex_region": "us-central1",
             "timeout": 15,
             "min_text_len": 45,
-            "max_text_len": 200,
+
             "vocab_min_count": 3,
             "system_prompt_file": "prompts/gemini-merge-system.txt",
         },

@@ -27,7 +27,6 @@ MERGE_CONFIG = {
     "vertex_region": "us-central1",
     "timeout": 15,
     "min_text_len": 45,
-    "max_text_len": 200,
     "vocab_min_count": 3,
     "system_prompt": "You are a merge editor.",
 }
@@ -128,13 +127,6 @@ class TestGeminiMergeGuards:
         short = "hi"
         result = process_with_gemini_merge(short, "hi", MERGE_CONFIG)
         assert result == short
-        mock_run.assert_not_called()
-
-    @patch("post_processor_configs.subprocess.run")
-    def test_long_text_returns_original(self, mock_run):
-        long = "a" * 201
-        result = process_with_gemini_merge(long, "b" * 201, MERGE_CONFIG)
-        assert result == long
         mock_run.assert_not_called()
 
     @patch("post_processor_configs.subprocess.run")
