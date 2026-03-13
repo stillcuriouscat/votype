@@ -13,6 +13,7 @@ import re
 import logging
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -241,6 +242,37 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     return output
 
 
+def _run_vertex_proxy(cmd, stdin_data, timeout, max_retries=1):
+    """Run vertex_proxy.py via subprocess with retry on 429 RESOURCE_EXHAUSTED.
+
+    Args:
+        cmd: Command list for subprocess.run.
+        stdin_data: JSON string to send via stdin.
+        timeout: Timeout in seconds for each attempt.
+        max_retries: Number of retries on 429 errors (default 1).
+
+    Returns:
+        subprocess.CompletedProcess from the last attempt.
+
+    Raises:
+        subprocess.TimeoutExpired: If the subprocess times out (not retried).
+    """
+    result = subprocess.run(
+        cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+    )
+
+    if result.returncode != 0 and max_retries > 0:
+        stderr = result.stderr or ""
+        if "429" in stderr or "RESOURCE_EXHAUSTED" in stderr:
+            logging.info("Vertex AI 429, retrying in 2s...")
+            time.sleep(2)
+            result = subprocess.run(
+                cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+            )
+
+    return result
+
+
 def process_with_vertex_ai(text, config, glossary_ctx=""):
     """Call Vertex AI Gemini via SSH proxy on Oracle Cloud for text polishing.
 
@@ -301,9 +333,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
     timeout = config.get("timeout", 15)
 
     try:
-        result = subprocess.run(
-            cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
-        )
+        result = _run_vertex_proxy(cmd, stdin_data, timeout)
     except subprocess.TimeoutExpired:
         logging.warning(f"Vertex AI timed out after {timeout}s")
         from voice_input import notify
@@ -403,9 +433,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     timeout = config.get("timeout", 15)
 
     try:
-        result = subprocess.run(
-            cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
-        )
+        result = _run_vertex_proxy(cmd, stdin_data, timeout)
     except subprocess.TimeoutExpired:
         logging.warning(f"Gemini merge timed out after {timeout}s")
         from voice_input import notify
