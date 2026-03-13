@@ -290,11 +290,14 @@ class TestDualTranscription:
 
     @patch.object(voice_input.ASRDaemon, "_post_process", return_value="processed text")
     @patch.object(voice_input.ModelInference, "transcribe", return_value="primary text")
-    @patch.object(voice_input.ModelInference, "transcribe_faster_whisper", return_value="secondary text")
-    def test_secondary_text_set_when_model_available(self, mock_fw, mock_primary, mock_pp):
+    def test_secondary_text_set_when_model_available(self, mock_primary, mock_pp):
         """LLD 2.1 row 2: secondary transcription stored as _last_secondary_text."""
         daemon = _make_transcribe_daemon()
-        daemon._secondary_model = MagicMock()
+        mock_secondary = MagicMock()
+        mock_seg = MagicMock()
+        mock_seg.text = "secondary text"
+        mock_secondary.transcribe.return_value = (iter([mock_seg]), MagicMock())
+        daemon._secondary_model = mock_secondary
 
         with patch.object(daemon, "set_status", create=True):
             daemon._handle_transcribe({"command": "transcribe", "data": "/tmp/audio.wav"})
@@ -303,11 +306,12 @@ class TestDualTranscription:
 
     @patch.object(voice_input.ASRDaemon, "_post_process", return_value="processed text")
     @patch.object(voice_input.ModelInference, "transcribe", return_value="primary text")
-    @patch.object(voice_input.ModelInference, "transcribe_faster_whisper", side_effect=RuntimeError("fail"))
-    def test_secondary_failure_sets_none(self, mock_fw, mock_primary, mock_pp):
+    def test_secondary_failure_sets_none(self, mock_primary, mock_pp):
         """LLD 4.1: secondary model inference fails -> _last_secondary_text = None."""
         daemon = _make_transcribe_daemon()
-        daemon._secondary_model = MagicMock()
+        mock_secondary = MagicMock()
+        mock_secondary.transcribe.side_effect = RuntimeError("fail")
+        daemon._secondary_model = mock_secondary
 
         with patch.object(daemon, "set_status", create=True):
             result = daemon._handle_transcribe({"command": "transcribe", "data": "/tmp/audio.wav"})

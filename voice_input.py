@@ -1025,37 +1025,63 @@ class ASRDaemon:
             return {"error": str(e)}
     
     def _handle_transcribe(self, msg):
-        """Handle transcription request.
+        """Handle transcription request with parallel dual ASR.
 
         Note: does NOT set idle status — the CLI process sends set_idle
         after type_text() completes, so the icon stays orange during the
         entire pipeline (ASR → post-process → paste).
 
-        When secondary ASR model is loaded (gemini-merge mode), runs both
-        primary and secondary transcription on the same audio file.
+        When secondary ASR model is loaded (gemini-merge mode), runs
+        secondary ASR in a background thread while primary runs in the
+        main thread. Both release the GIL via C extensions (PyTorch CUDA /
+        CTranslate2), enabling true CPU+GPU parallelism.
         """
         self.set_status("processing")
         audio_path = msg.get("data")
-        response = self.transcribe(msg.get("data"))
 
-        # Run secondary ASR if available (for dual fusion)
-        # Skip if primary text is too short — no point running faster-whisper
-        # when Gemini merge will also be skipped (min_text_len guard)
+        # Reset stale data at start of every call
+        self._last_secondary_text = None
+
+        # Start secondary ASR in background thread BEFORE primary
+        secondary_thread = None
+        secondary_result = {}
+
         if getattr(self, '_secondary_model', None) is not None and audio_path:
-            primary_text = (response or {}).get("text", "")
-            preset = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {})
-            min_len = preset.get("config", {}).get("min_text_len", 45)
-            if len(primary_text) >= min_len:
+            def _run_secondary(model, path, result):
                 try:
-                    segments, _info = self._secondary_model.transcribe(audio_path)
-                    self._last_secondary_text = "".join(seg.text for seg in segments)
-                    _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
+                    segments, _info = model.transcribe(path)
+                    result["text"] = "".join(seg.text for seg in segments)
                 except Exception as e:
                     logging.warning(f"Secondary ASR failed: {e}")
-                    self._last_secondary_text = None
+                    result["error"] = str(e)
+
+            secondary_thread = threading.Thread(
+                target=_run_secondary,
+                args=(self._secondary_model, audio_path, secondary_result),
+                daemon=True,
+            )
+            secondary_thread.start()
+
+        # Primary ASR in main thread (GPU)
+        response = self.transcribe(audio_path)
+
+        # Collect secondary result after primary completes
+        if secondary_thread is not None:
+            secondary_thread.join(timeout=30)
+
+            primary_text = (response or {}).get("text", "")
+            if not primary_text:
+                self._last_secondary_text = None
+            elif secondary_thread.is_alive():
+                logging.warning("Secondary ASR timed out after 30s")
+                self._last_secondary_text = None
+            elif "error" in secondary_result:
+                self._last_secondary_text = None
+            elif "text" in secondary_result:
+                self._last_secondary_text = secondary_result["text"]
+                _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
             else:
                 self._last_secondary_text = None
-                _log("ASR-2", f"skipped: primary too short ({len(primary_text)} < {min_len})")
 
         if response and "text" in response and response["text"]:
             _log("ASR", f"raw: {response['text'][:120]}")

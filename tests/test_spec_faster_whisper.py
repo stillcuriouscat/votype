@@ -493,10 +493,18 @@ class TestHandleTranscribeDualASR:
         assert daemon._last_secondary_text is None
         assert result["text"] == "processed"
 
-    def test_primary_failure_skips_secondary(self):
-        """BT#4: primary ASR fails → secondary NOT attempted."""
+    def test_primary_failure_discards_secondary(self):
+        """BT#4: primary ASR fails → _last_secondary_text is None.
+
+        In parallel mode, secondary thread may have already started and
+        completed before primary failure is detected. The result is
+        simply discarded.
+        """
         daemon = _make_daemon()
         mock_secondary = MagicMock()
+        mock_seg = MagicMock()
+        mock_seg.text = "whisper output"
+        mock_secondary.transcribe.return_value = (iter([mock_seg]), MagicMock())
         daemon._secondary_model = mock_secondary
         daemon.model = MagicMock()
         daemon.framework = "fireredasr"
@@ -510,7 +518,7 @@ class TestHandleTranscribeDualASR:
             result = daemon._handle_transcribe({"data": "/tmp/audio.wav"})
 
         assert "error" in result
-        mock_secondary.transcribe.assert_not_called()
+        assert daemon._last_secondary_text is None
 
 
 # ===========================================================================
