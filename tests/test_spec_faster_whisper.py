@@ -512,7 +512,7 @@ class TestHandleTranscribeDualASR:
         daemon.current_model_id = "firered-asr"
 
         with patch("voice_input.ModelInference") as mock_inference, \
-             patch("voice_input.set_status"):
+             patch.object(daemon, "set_status"):
             mock_inference.transcribe.side_effect = Exception("primary ASR fail")
 
             result = daemon._handle_transcribe({"data": "/tmp/audio.wav"})
