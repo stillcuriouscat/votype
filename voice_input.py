@@ -1039,14 +1039,23 @@ class ASRDaemon:
         response = self.transcribe(msg.get("data"))
 
         # Run secondary ASR if available (for dual fusion)
+        # Skip if primary text is too short — no point running faster-whisper
+        # when Gemini merge will also be skipped (min_text_len guard)
         if getattr(self, '_secondary_model', None) is not None and audio_path:
-            try:
-                segments, _info = self._secondary_model.transcribe(audio_path)
-                self._last_secondary_text = "".join(seg.text for seg in segments)
-                _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
-            except Exception as e:
-                logging.warning(f"Secondary ASR failed: {e}")
+            primary_text = (response or {}).get("text", "")
+            preset = POST_PROCESSOR_PRESETS.get(self.current_post_processor_id, {})
+            min_len = preset.get("config", {}).get("min_text_len", 45)
+            if len(primary_text) >= min_len:
+                try:
+                    segments, _info = self._secondary_model.transcribe(audio_path)
+                    self._last_secondary_text = "".join(seg.text for seg in segments)
+                    _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
+                except Exception as e:
+                    logging.warning(f"Secondary ASR failed: {e}")
+                    self._last_secondary_text = None
+            else:
                 self._last_secondary_text = None
+                _log("ASR-2", f"skipped: primary too short ({len(primary_text)} < {min_len})")
 
         if response and "text" in response and response["text"]:
             _log("ASR", f"raw: {response['text'][:120]}")
