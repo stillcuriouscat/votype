@@ -76,7 +76,7 @@ MODEL_PRESETS = {
 }
 
 # Default model
-DEFAULT_MODEL = "firered-asr"
+DEFAULT_MODEL = "sensevoice"
 
 # Device configuration (prefer CUDA)
 DEVICE = "cuda:0"

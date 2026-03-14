@@ -401,10 +401,10 @@ class TestGeminiMergePreset:
         """BT#1: name."""
         assert self.preset["name"] == "Gemini Merge (Dual ASR)"
 
-    def test_description_mentions_fireredasr_and_faster_whisper(self):
-        """BT#2: description contains FireRedASR and faster-whisper."""
+    def test_description_mentions_primary_and_faster_whisper(self):
+        """BT#2: description contains primary ASR model and faster-whisper."""
         desc = self.preset["description"]
-        assert "FireRedASR" in desc or "firered" in desc.lower()
+        assert "SenseVoice" in desc or "sensevoice" in desc.lower()
         assert "faster-whisper" in desc or "Whisper" in desc
 
     def test_framework(self):

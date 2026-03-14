@@ -381,7 +381,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     Uses the same SSH + vertex_proxy.py mechanism as process_with_vertex_ai.
 
     Args:
-        primary_text: Primary ASR (FireRedASR) transcription.
+        primary_text: Primary ASR (SenseVoice) transcription.
         secondary_text: Secondary ASR (faster-whisper) transcription, or None.
         config: Preset config dict with ssh_host, proxy_script, model, etc.
         glossary_ctx: Glossary context string to append to system prompt.

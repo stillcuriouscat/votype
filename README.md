@@ -16,10 +16,10 @@ Global voice typing for Linux -- speak and text appears at your cursor in any ap
 
 | Model | Description | VRAM |
 |-------|-------------|------|
-| `firered-asr` (default) | Xiaohongshu AED model, Chinese SOTA, auto-punctuation (FireRedPunc) | ~7.5GB |
+| `firered-asr` | Xiaohongshu AED model, Chinese SOTA, auto-punctuation (FireRedPunc) | ~7.5GB |
 | `fun-asr-nano` | Latest end-to-end model, 31 languages, high accuracy | ~800MB |
 | `paraformer` | Fast and lightweight, Chinese-optimized (CPU mode) | ~800MB |
-| `sensevoice` | Chinese-English mixed, multilingual | ~900MB |
+| `sensevoice` (default) | Chinese-English mixed, multilingual | ~900MB |
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ chmod +x install_dependencies.sh
 ### CLI Commands
 
 ```bash
-voice-input daemon                        # Start the daemon (default model: firered-asr)
+voice-input daemon                        # Start the daemon (default model: sensevoice)
 voice-input daemon --model sensevoice     # Start with a specific model
 voice-input toggle                        # Toggle recording (auto-starts daemon if needed)
 voice-input status                        # Show current status and model info

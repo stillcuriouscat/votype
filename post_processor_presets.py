@@ -99,7 +99,7 @@ POST_PROCESSOR_PRESETS = {
     },
     "gemini-merge": {
         "name": "Gemini Merge (Dual ASR)",
-        "description": "Merge FireRedASR + faster-whisper via Gemini 2.5 Flash for best Chinese-English accuracy",
+        "description": "Merge SenseVoice + faster-whisper via Gemini 2.5 Flash for best Chinese-English accuracy",
         "framework": "vertex-ai-merge",
         "config": {
             "ssh_host": "oracle-cloud",

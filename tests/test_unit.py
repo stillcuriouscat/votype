@@ -447,7 +447,7 @@ class TestGetCurrentModel:
         """Single model architecture: always returns default model."""
         result = voice_input.get_current_model()
         assert result == voice_input.DEFAULT_MODEL
-        assert result == "fun-asr-nano"
+        assert result == "sensevoice"
 
     def test_returns_saved_model(self, tmp_path, monkeypatch):
         """Single model architecture: returns default model even when state file exists."""

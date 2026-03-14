@@ -2,7 +2,7 @@
 """
 Global Voice Input Tool - Multi-ASR-framework support
 Supports FunASR, Transformers, FireRedASR and more
-Punctuation is auto-applied for firered-asr (via FireRedPunc); other models have built-in punctuation.
+Punctuation is built-in for default model (SenseVoice); firered-asr uses FireRedPunc.
 
 Usage:
     voice-input start    # Start recording
@@ -840,7 +840,7 @@ class ASRDaemon:
             _log("PUNC", f"no punctuation for {self.current_model_id}")
 
     def _load_secondary_model(self):
-        """Load faster-whisper as secondary ASR model for dual fusion.
+        """Load faster-whisper as secondary ASR model for dual ASR fusion.
 
         Non-fatal: if loading fails, secondary_model stays None and fusion
         degrades gracefully to single-ASR mode.
@@ -856,10 +856,10 @@ class ASRDaemon:
             return
 
         try:
-            logging.info("Loading secondary ASR model (faster-whisper large-v3-turbo, CPU, int8)...")
-            print("  Loading secondary ASR: faster-whisper (CPU, int8)...")
+            logging.info("Loading secondary ASR model (faster-whisper large-v3-turbo, GPU, int8_float16)...")
+            print("  Loading secondary ASR: faster-whisper (GPU, int8_float16)...")
             self._secondary_model = WhisperModel(
-                "large-v3-turbo", device="cpu", compute_type="int8"
+                "large-v3-turbo", device="cuda", compute_type="int8_float16"
             )
             _log("SECONDARY", "faster-whisper loaded successfully")
             print("  Secondary ASR ready: faster-whisper")
@@ -1033,11 +1033,12 @@ class ASRDaemon:
 
         When secondary ASR model is loaded (gemini-merge mode), runs
         secondary ASR in a background thread while primary runs in the
-        main thread. Both release the GIL via C extensions (PyTorch CUDA /
+        main thread. Both release the GIL via C extensions (FunASR CUDA /
         CTranslate2), enabling true CPU+GPU parallelism.
         """
         self.set_status("processing")
         audio_path = msg.get("data")
+        t_start = time.time()
 
         # Reset stale data at start of every call
         self._last_secondary_text = None
@@ -1048,9 +1049,11 @@ class ASRDaemon:
 
         if getattr(self, '_secondary_model', None) is not None and audio_path:
             def _run_secondary(model, path, result):
+                t0 = time.time()
                 try:
-                    segments, _info = model.transcribe(path)
+                    segments, _info = model.transcribe(path, language="zh")
                     result["text"] = "".join(seg.text for seg in segments)
+                    result["elapsed"] = time.time() - t0
                 except Exception as e:
                     logging.warning(f"Secondary ASR failed: {e}")
                     result["error"] = str(e)
@@ -1063,11 +1066,17 @@ class ASRDaemon:
             secondary_thread.start()
 
         # Primary ASR in main thread (GPU)
+        t_primary = time.time()
         response = self.transcribe(audio_path)
+        t_primary_done = time.time()
+        _log("TIMING", f"primary ASR: {t_primary_done - t_primary:.2f}s")
 
         # Collect secondary result after primary completes
         if secondary_thread is not None:
             secondary_thread.join(timeout=30)
+            t_join = time.time()
+            sec_elapsed = secondary_result.get("elapsed", -1)
+            _log("TIMING", f"secondary ASR: {sec_elapsed:.2f}s, join wait: {t_join - t_primary_done:.2f}s, total: {t_join - t_start:.2f}s")
 
             primary_text = (response or {}).get("text", "")
             if not primary_text:

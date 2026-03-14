@@ -336,6 +336,8 @@ class ModelInference:
     @staticmethod
     def transcribe_funasr(model: Any, audio_path: str, model_id: str, hotwords: str = HOTWORDS) -> str:
         """FunASR framework inference."""
+        import re
+
         if model_id == "fun-asr-nano":
             result = model.generate(
                 input=[audio_path],
@@ -351,7 +353,11 @@ class ModelInference:
                 result = model.generate(input=audio_path)
 
         if result and len(result) > 0:
-            return result[0].get("text", "")
+            text = result[0].get("text", "")
+            # SenseVoice outputs special tokens: <|zh|><|HAPPY|><|Speech|><|woitn|>
+            # Strip all <|...|> tags to get clean transcription text
+            text = re.sub(r'<\|[^|]*\|>', '', text).strip()
+            return text
         return ""
 
     @staticmethod

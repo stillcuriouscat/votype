@@ -125,6 +125,51 @@
       ],
       "priority": 7,
       "passes": true
+    },
+    {
+      "id": "US-008",
+      "title": "Parallelize FireRedASR and faster-whisper transcription",
+      "description": "Run FireRedASR (GPU, primary) and faster-whisper (CPU, secondary) in parallel using threading.Thread in _handle_transcribe(). FireRedASR runs in main thread (GPU), faster-whisper runs in background thread (CPU). Both release GIL via C extensions (PyTorch CUDA / CTranslate2), enabling true CPU+GPU parallelism. Reduces wall-clock latency by 0.1-2s per transcription.",
+      "acceptanceCriteria": [
+        "_handle_transcribe() starts secondary ASR in a background thread BEFORE primary ASR when _secondary_model is loaded",
+        "Primary ASR runs in main thread (GPU), secondary in background thread (CPU) — no resource conflict",
+        "Both threads must complete (join) before _post_process() is called",
+        "Secondary thread uses threading.Thread(daemon=True) with join(timeout=30) to prevent hangs",
+        "Secondary result collected via mutable dict (thread-safe after join due to happens-before guarantee)",
+        "When primary fails or returns empty text: _last_secondary_text = None (secondary result discarded)",
+        "When secondary fails or times out: _last_secondary_text = None, warning logged",
+        "When no secondary model loaded: _last_secondary_text = None (fix pre-existing stale data bug)",
+        "Remove min_text_len pre-check from _handle_transcribe — downstream process_with_gemini_merge() already has identical guard at post_processor_configs.py:368",
+        "Update FUNCTION_SPEC BT#4: secondary may start in parallel, result discarded on primary failure",
+        "Update test_spec_faster_whisper.py test_primary_failure_skips_secondary to match new spec",
+        "Fix test_integration_faster_whisper.py TestDualTranscription tests (pre-existing mock target mismatch)",
+        "No new dependencies — use stdlib threading (already imported)",
+        "Existing 444 passing tests remain passing (49 pre-existing failures not increased)",
+        "Tests pass"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Adversarial review PLAN_R1.md CONDITIONAL GO. Beads: voice_input-94f. See adversarial-review/parallelize-dual-asr/ for full plan and critique."
+    },
+    {
+      "id": "US-009",
+      "title": "Switch primary ASR from FireRedASR to SenseVoice Small GPU",
+      "description": "FireRedASR(7.2GB) + faster-whisper GPU(0.8GB) = 8.7GB > 8GB VRAM causes CUDA OOM. Switch primary ASR to SenseVoice Small(~0.5GB GPU) so both models fit in 8GB VRAM. SenseVoice has builtin punctuation, no FireRedPunc needed. Beads: voice_input-9ne.",
+      "acceptanceCriteria": [
+        "DEFAULT_MODEL changed from 'firered-asr' to 'sensevoice' in model_presets.py",
+        "SenseVoice loads on GPU (no force_cpu), VRAM usage ~0.5GB",
+        "faster-whisper secondary loads on GPU (int8_float16), VRAM usage ~0.8GB",
+        "Total VRAM < 2GB when both models loaded (gemini-merge mode)",
+        "Punctuation is 'builtin' for sensevoice — FireRedPunc NOT loaded (saves VRAM)",
+        "gemini-merge description updated to mention SenseVoice instead of FireRedASR",
+        "README.md updated with sensevoice as default",
+        "No new test failures introduced (baseline: 45 pre-existing failures)",
+        "E2E voice test passes (daemon restart, transcription works)",
+        "Tests pass"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Beads: voice_input-9ne. Code changes done, needs daemon restart + E2E verification."
     }
   ]
 }
