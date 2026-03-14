@@ -42,6 +42,8 @@ MODEL_PRESETS = {
         "punctuation": "builtin",
         "config": {
             "model": "iic/SenseVoiceSmall",
+            "vad_model": "fsmn-vad",
+            "vad_kwargs": {"max_single_segment_time": 30000},
         },
     },
 
