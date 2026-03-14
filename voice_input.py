@@ -76,6 +76,7 @@ POST_PROCESSOR_STATE_FILE = CONFIG_DIR / "current_post_processor.txt"
 def ensure_config_dir():
     """Ensure config directory exists."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _log("INIT", f"config dir ensured: {CONFIG_DIR}")
 
 
 def _cleanup_old_recordings(max_age_hours=2):
@@ -85,6 +86,7 @@ def _cleanup_old_recordings(max_age_hours=2):
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink(missing_ok=True)
+                _log("CLEANUP", f"deleted stale recording: {f.name}")
         except OSError:
             pass
 
@@ -147,6 +149,7 @@ def is_process_running(pid_file):
         return True
     except (ProcessLookupError, ValueError):
         pid_file.unlink(missing_ok=True)
+        _log("PID", f"cleaned stale PID file: {pid_file.name}")
         return False
 
 
@@ -159,6 +162,7 @@ def _cleanup_daemon_files():
     """Clean up stale daemon PID and socket files."""
     DAEMON_PID_FILE.unlink(missing_ok=True)
     SOCKET_PATH.unlink(missing_ok=True)
+    _log("DAEMON", "cleaned up daemon files (PID, socket)")
 
 
 def _is_daemon_lock_held():
@@ -237,6 +241,7 @@ def send_to_daemon(command, data=None, timeout=60):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(timeout)
         client.connect(str(SOCKET_PATH))
+        _log("IPC", f"connected to daemon socket")
 
         msg = json.dumps({"command": command, "data": data})
         client.send(msg.encode())
@@ -263,10 +268,12 @@ def start_recording():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     audio_file = CONFIG_DIR / f"recording_{ts}.wav"
     AUDIO_PATH_FILE.write_text(str(audio_file))
+    _log("TRACE", f"recording path saved: {audio_file}")
 
     # Notify the daemon to update icon status
     if is_daemon_running():
         send_to_daemon("recording_start")
+        _log("IPC", "sent recording_start to daemon")
 
     # Use Popen to start recording (better process management)
     try:
@@ -293,11 +300,14 @@ def start_recording():
             stderr=subprocess.DEVNULL,
             start_new_session=True  # Create new session to decouple from parent process
         )
+        _log("PROC", f"recorder spawned: {_RECORDER} (PID {proc.pid})")
 
         pid = proc.pid
         PID_FILE.write_text(str(pid))
+        _log("PROC", f"recording PID saved: {pid}")
         print(f"Recording started (PID: {pid}, recorder: {_RECORDER}, file: {audio_file.name})")
     except (FileNotFoundError, OSError) as e:
+        _log("ERROR", f"start_recording failed: {e}")
         AUDIO_PATH_FILE.unlink(missing_ok=True)
         if is_daemon_running():
             send_to_daemon("set_idle")
@@ -315,22 +325,27 @@ def stop_recording():
 
     # Mark processing state immediately — prevents concurrent toggle from starting new recording
     PROCESSING_FILE.write_text(str(os.getpid()))
+    _log("STATE", "processing flag set")
     _log_to_notify_file("processing started (recording stopped, transcription pending)")
 
     # Notify the daemon to update icon status (show processing/orange)
     daemon_running = is_daemon_running()
     if daemon_running:
         send_to_daemon("recording_stop")
+        _log("IPC", "sent recording_stop to daemon")
 
     # Stop recording
     try:
         pid = int(PID_FILE.read_text().strip())
         os.kill(pid, signal.SIGTERM)
+        _log("PROC", f"SIGTERM sent to recorder PID {pid}")
         time.sleep(0.3)
-    except (ProcessLookupError, ValueError):
+    except (ProcessLookupError, ValueError) as e:
+        _log("ERROR", f"kill recorder failed: {e}")
         pass
 
     PID_FILE.unlink(missing_ok=True)
+    _log("PID", "recording PID file removed")
 
     # Determine the audio file path (timestamped or legacy fallback)
     audio_file = None
@@ -345,6 +360,7 @@ def stop_recording():
 
     if not audio_file.exists():
         PROCESSING_FILE.unlink(missing_ok=True)
+        _log("STATE", "processing flag cleared (no audio)")
         if daemon_running:
             send_to_daemon("set_idle")
         notify("❌ Voice Input", "Recording file not found", "critical")
@@ -353,6 +369,7 @@ def stop_recording():
     # If the daemon is running, use it for transcription
     if daemon_running:
         response = send_to_daemon("transcribe", str(audio_file))
+        _log("IPC", "sent transcribe request to daemon")
         if response and "text" in response:
             text = response["text"]
             if text:
@@ -364,12 +381,14 @@ def stop_recording():
             # On failure, the current recording is preserved for recovery
         # Set idle AFTER text has been pasted (icon stays orange during entire pipeline)
         send_to_daemon("set_idle")
+        _log("IPC", "sent set_idle (transcription complete)")
     else:
         # No daemon is an abnormal situation (normally toggle starts the daemon first)
         notify("❌ Voice Input", "Service error\nRun voice-input daemon to start\nor check /tmp/voice-input-daemon.log", "critical")
 
     # Clear processing flag — allows new recordings
     PROCESSING_FILE.unlink(missing_ok=True)
+    _log("STATE", "processing flag cleared")
     _log_to_notify_file("processing complete")
 
     # Always clean up old recordings (>2h), regardless of transcription result
@@ -482,6 +501,7 @@ def type_text(text):
         kitty_socket = _get_kitty_socket()
         if kitty_socket and _is_kitty_window():
             try:
+                _log("INPUT", "attempting kitty send-text")
                 subprocess.run(
                     ["kitty", "@", "--to", f"unix:{kitty_socket}", "send-text", text],
                     check=True
@@ -489,6 +509,7 @@ def type_text(text):
                 print(f"[type_text] Used kitty send-text")
                 return
             except (subprocess.CalledProcessError, FileNotFoundError):
+                _log("INPUT", "kitty failed, falling back to clipboard")
                 pass  # Fall through to clipboard method
 
         # Clipboard paste method (for non-Kitty windows or Kitty fallback)
@@ -498,6 +519,7 @@ def type_text(text):
 
         terminal = is_terminal_window()
         _send_paste_key(terminal)
+        _log("INPUT", f"paste key sent to {'terminal' if terminal else 'GUI'}")
         paste_key = "ctrl+shift+v" if terminal else "ctrl+v"
         print(f"[type_text] Used clipboard paste (xdotool: {paste_key})")
 
@@ -637,6 +659,7 @@ class ASRDaemon:
         """Save post-processor ID to state file for daemon restart recovery."""
         try:
             POST_PROCESSOR_STATE_FILE.write_text(preset_id)
+            _log("CONFIG", f"post-processor state saved: {preset_id}")
         except OSError:
             pass
 
@@ -753,6 +776,7 @@ class ASRDaemon:
 
     def set_status(self, status):
         """Set status (idle/recording/processing)"""
+        _log("STATE", f"icon status: {status}")
         print(f"[Indicator] Setting status to: {status}")
         if not self.indicator:
             print("[Indicator] No indicator available")
@@ -805,6 +829,7 @@ class ASRDaemon:
             self.model, self.framework, self.extra_data = ModelLoader.load_model(model_id, DEVICE)
             self.current_model_id = model_id
             set_current_model(model_id)
+            _log("MODEL", f"primary ASR loaded: {model_id} ({preset['name']})")
 
             print(f"  ✓ {preset['name']} loaded successfully!")
             print("="*60)
@@ -856,6 +881,7 @@ class ASRDaemon:
             return
 
         try:
+            _log("SECONDARY", "loading secondary ASR model (faster-whisper)...")
             logging.info("Loading secondary ASR model (faster-whisper large-v3-turbo, GPU, int8_float16)...")
             print("  Loading secondary ASR: faster-whisper (GPU, int8_float16)...")
             self._secondary_model = WhisperModel(
@@ -909,8 +935,10 @@ class ASRDaemon:
             # Load/unload secondary ASR model based on post-processor
             if self.post_processor_framework == "vertex-ai-merge":
                 self._load_secondary_model()
+                _log("PP-LOAD", "secondary ASR loaded for merge mode")
             else:
                 self._unload_secondary_model()
+                _log("PP-LOAD", f"secondary ASR unloaded (not needed for {preset_id})")
             _log("PP-LOAD", f"loaded: {preset['name']} ({preset_id})")
             print(f"  Post-processor ready: {preset['name']}")
             print(f"{'='*60}\n")
@@ -919,6 +947,7 @@ class ASRDaemon:
             _log("PP-LOAD", f"FAILED: {error_msg}")
             print(f"  {error_msg}")
             # Fall back to regex-only
+            _log("PP-LOAD", "post-processor load failed, falling back to regex-only")
             self.post_processor_model = None
             self.current_post_processor_id = "none"
             self.post_processor_framework = "regex"
@@ -982,7 +1011,9 @@ class ASRDaemon:
             # Vocab accumulation (only if LLM changed something)
             if before_polish != result:
                 self._vocab = diff_to_vocab(before_polish, result, self._vocab)
+                _log("VOCAB", "terms extracted from LLM diff")
                 save_vocab(self._vocab)
+                _log("VOCAB", f"vocab saved ({len(self._vocab)} entries)")
                 # Reload merged vocab (save_vocab merges with disk)
                 self._vocab = load_vocab()
 
@@ -1042,6 +1073,7 @@ class ASRDaemon:
 
         # Reset stale data at start of every call
         self._last_secondary_text = None
+        _log("SECONDARY", "secondary text reset")
 
         # Start secondary ASR in background thread BEFORE primary
         secondary_thread = None
@@ -1064,6 +1096,7 @@ class ASRDaemon:
                 daemon=True,
             )
             secondary_thread.start()
+            _log("SECONDARY", "secondary ASR thread started")
 
         # Primary ASR in main thread (GPU)
         t_primary = time.time()
@@ -1073,6 +1106,7 @@ class ASRDaemon:
 
         # Collect secondary result after primary completes
         if secondary_thread is not None:
+            _log("SECONDARY", "waiting for secondary thread")
             secondary_thread.join(timeout=30)
             t_join = time.time()
             sec_elapsed = secondary_result.get("elapsed", -1)
@@ -1083,8 +1117,10 @@ class ASRDaemon:
                 self._last_secondary_text = None
             elif secondary_thread.is_alive():
                 logging.warning("Secondary ASR timed out after 30s")
+                _log("SECONDARY", "secondary thread timed out")
                 self._last_secondary_text = None
             elif "error" in secondary_result:
+                _log("ERROR", f"secondary ASR error: {secondary_result.get('error', 'unknown')}")
                 self._last_secondary_text = None
             elif "text" in secondary_result:
                 self._last_secondary_text = secondary_result["text"]
@@ -1166,6 +1202,7 @@ class ASRDaemon:
                     response = {"status": "ok", "message": "Already using this post-processor"}
                 else:
                     try:
+                        _log("SOCKET", f"post-processor switch requested: {new_pp_id}")
                         self.load_post_processor(new_pp_id)
                         preset = POST_PROCESSOR_PRESETS[new_pp_id]
                         notify("✅ Voice Input", f"Post-processor: {preset['name']}")
@@ -1173,6 +1210,7 @@ class ASRDaemon:
                     except Exception as e:
                         response = {"error": f"Failed to switch post-processor: {e}"}
             elif command in status_commands:
+                _log("SOCKET", f"status command: {command}")
                 self.set_status(status_commands[command])
                 response = {"status": "ok"}
             else:
@@ -1180,6 +1218,7 @@ class ASRDaemon:
 
             client.send(json.dumps(response).encode())
         except Exception as e:
+            _log("ERROR", f"socket handler error: {e}")
             try:
                 client.send(json.dumps({"error": str(e)}).encode())
             except:
@@ -1191,6 +1230,7 @@ class ASRDaemon:
         """Socket server thread"""
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(SOCKET_PATH))
+        _log("SOCKET", f"daemon socket bound: {SOCKET_PATH}")
         server.listen(5)
         server.settimeout(1)
         
@@ -1213,15 +1253,19 @@ class ASRDaemon:
         # Acquire exclusive file lock — prevents two daemons from running simultaneously.
         # The lock is held for the daemon's lifetime and auto-released on crash/exit.
         self._lock_fd = open(DAEMON_LOCK_FILE, 'w')
+        _log("LOCK", "daemon lock file opened")
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _log("LOCK", "daemon lock acquired")
         except (IOError, OSError):
+            _log("ERROR", "daemon lock held by another process")
             print("Another daemon instance is already running (lock held). Exiting.")
             self._lock_fd.close()
             return
 
         # Write PID file
         DAEMON_PID_FILE.write_text(str(os.getpid()))
+        _log("DAEMON", f"daemon PID written: {os.getpid()}")
 
         # Remove old socket file
         SOCKET_PATH.unlink(missing_ok=True)
@@ -1254,7 +1298,8 @@ class ASRDaemon:
         print("Use 'voice-input toggle' to start/stop recording.")
         
         self.running = True
-        
+        _log("DAEMON", "daemon startup complete")
+
         # Set up system tray icon first (before starting socket server)
         if HAS_INDICATOR:
             self.setup_indicator()
@@ -1268,6 +1313,7 @@ class ASRDaemon:
         if HAS_INDICATOR:
             logging.info("Background service started, tray icon displayed")
             # GTK main loop (blocking)
+            _log("DAEMON", "GTK main loop started")
             Gtk.main()
         else:
             logging.info("Background service started, model loaded successfully")
@@ -1276,11 +1322,13 @@ class ASRDaemon:
                 time.sleep(1)
         
         # Cleanup
+        _log("DAEMON", "daemon shutdown initiated")
         self.running = False
         SOCKET_PATH.unlink(missing_ok=True)
         DAEMON_PID_FILE.unlink(missing_ok=True)
         if hasattr(self, '_lock_fd'):
             self._lock_fd.close()
+        _log("DAEMON", "daemon cleanup complete (socket, PID, lock)")
         print("Daemon stopped")
 
 

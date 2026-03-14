@@ -19,11 +19,17 @@ Requires: google-genai SDK (pip install google-genai)
 
 import json
 import sys
+import time
 
 # Suppress Python warnings (e.g., RequestsDependencyWarning) before any
 # google imports to prevent stderr pollution hiding real errors (CRITIC-R7-M3)
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def _trace(msg):
+    """Write trace timing to stderr (captured by caller for diagnosis)."""
+    print(f"[TRACE] {msg}", file=sys.stderr)
 
 # GCP project ID (not sensitive — public project identifier)
 GCP_PROJECT = "project-9cd34e60-a50d-406f-ae4"
@@ -121,6 +127,7 @@ def main():
         sys.exit(1)
 
     # Import SDK (lazy to allow --help without SDK installed)
+    t_sdk = time.time()
     try:
         genai, GenerateContentConfig, ThinkingConfig = _import_genai()
     except ImportError as e:
@@ -133,6 +140,7 @@ def main():
         project=GCP_PROJECT,
         location=region,
     )
+    _trace(f"sdk_init: {time.time() - t_sdk:.2f}s")
 
     # Call Gemini (thinking disabled via thinking_budget=0 for low latency)
     config = GenerateContentConfig(
@@ -142,6 +150,7 @@ def main():
         max_output_tokens=512,
     )
 
+    t_api = time.time()
     try:
         response = client.models.generate_content(
             model=model,
@@ -151,6 +160,7 @@ def main():
     except Exception as e:
         print(f"Gemini API error: {e}", file=sys.stderr)
         sys.exit(1)
+    _trace(f"gemini_api: {time.time() - t_api:.2f}s")
 
     if response.text is None:
         print("Gemini returned empty response (response.text is None)", file=sys.stderr)

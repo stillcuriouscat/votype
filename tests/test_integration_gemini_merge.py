@@ -32,12 +32,12 @@ MERGE_CONFIG = {
     "model": "gemini-2.5-flash",
     "vertex_region": "us-central1",
     "timeout": 15,
-    "min_text_len": 45,
+    "min_text_len": 15,
     "vocab_min_count": 3,
     "system_prompt_file": "prompts/gemini-merge-system.txt",
 }
 
-# Primary text long enough to pass min_text_len guard (>=45 chars)
+# Primary text long enough to pass min_text_len guard (>=15 chars)
 PRIMARY_LONG = "This is a sufficiently long primary text for testing the gemini merge function flow"
 SECONDARY_TEXT = "This is the secondary whisper transcription with English terms"
 MERGED_OUTPUT = "This is a merged output combining both ASR results nicely"
@@ -103,10 +103,10 @@ class TestGeminiMergePreset:
             f"Missing keys: {required_keys - set(config.keys())}"
         )
 
-    def test_preset_min_text_len_is_45(self):
-        """LLD 1.4: min_text_len=45 (same as gemini-fix)."""
+    def test_preset_min_text_len_is_15(self):
+        """LLD 1.4: min_text_len=15 (same as gemini-fix)."""
         config = POST_PROCESSOR_PRESETS["gemini-merge"]["config"]
-        assert config["min_text_len"] == 45
+        assert config["min_text_len"] == 15
 
     def test_preset_system_prompt_file_value(self):
         config = POST_PROCESSOR_PRESETS["gemini-merge"]["config"]

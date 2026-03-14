@@ -22,7 +22,7 @@ MERGE_CONFIG = {
     "model": "gemini-2.5-flash",
     "vertex_region": "us-central1",
     "timeout": 15,
-    "min_text_len": 45,
+    "min_text_len": 15,
     "vocab_min_count": 3,
     "system_prompt": "You are a merge editor.",  # inline — avoids file I/O
 }
@@ -186,7 +186,7 @@ class TestGeminiMergeGuards:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="output", stderr=""
         )
-        exact = _text(45)
+        exact = _text(15)
         assert len(exact) == MERGE_CONFIG["min_text_len"]
 
         result = process_with_gemini_merge(exact, None, MERGE_CONFIG)
@@ -433,7 +433,7 @@ class TestGeminiMergePreset:
 
     def test_min_text_len(self):
         """BT#9."""
-        assert self.config["min_text_len"] == 45
+        assert self.config["min_text_len"] == 15
 
     def test_vocab_min_count(self):
         """BT#11."""

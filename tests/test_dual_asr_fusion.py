@@ -26,7 +26,7 @@ MERGE_CONFIG = {
     "model": "gemini-2.5-flash",
     "vertex_region": "us-central1",
     "timeout": 15,
-    "min_text_len": 45,
+    "min_text_len": 15,
     "vocab_min_count": 3,
     "system_prompt": "You are a merge editor.",
 }
@@ -228,7 +228,7 @@ class TestGeminiMergePreset:
         assert config["ssh_host"] == "oracle-cloud"
         assert config["proxy_script"] == "~/vertex_proxy.py"
         assert config["model"] == "gemini-2.5-flash"
-        assert config["min_text_len"] == 45
+        assert config["min_text_len"] == 15
         assert config["timeout"] == 15
 
     def test_prompt_file(self):

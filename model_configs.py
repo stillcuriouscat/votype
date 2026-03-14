@@ -57,7 +57,9 @@ class ModelLoader:
         model_config["device"] = device
         model_config["disable_update"] = True
 
-        return AutoModel(**model_config)
+        model = AutoModel(**model_config)
+        logging.info("[MODEL] FunASR model loaded: %s", config.get("model", config.get("model_id", "unknown")))
+        return model
 
     @staticmethod
     def load_transformers_model(config: Dict[str, Any], device: str = "cpu") -> tuple:
@@ -111,6 +113,7 @@ class ModelLoader:
             trust_remote_code=config.get("trust_remote_code", True)
         )
 
+        logging.info("[MODEL] Transformers model loaded: %s on %s", hf_id, model.device)
         return model, processor
 
     @staticmethod
@@ -131,6 +134,7 @@ class ModelLoader:
         device_map = "cpu" if device == "cpu" else "auto"
 
         processor = AutoProcessor.from_pretrained(model_path)
+        logging.info("[MODEL] GLM-ASR processor loaded")
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_path,
             dtype="auto",
@@ -156,6 +160,7 @@ class ModelLoader:
         from fireredasr.models.fireredasr import FireRedAsr
 
         model = FireRedAsr.from_pretrained(config["model_type"])
+        logging.info("[MODEL] FireRedASR loaded: %s", config["model_type"])
         use_gpu = device.startswith("cuda") and torch.cuda.is_available()
         return model, use_gpu
 
@@ -179,6 +184,7 @@ class ModelLoader:
 
         logging.info(f"Loading faster-whisper model: {model_size} (compute_type={compute_type}, device={device})")
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        logging.info("[MODEL] faster-whisper loaded: %s (%s, %s)", model_size, compute_type, device)
         return model
 
     @classmethod
@@ -205,19 +211,27 @@ class ModelLoader:
         logging.info(f"Loading model: {preset['name']} (framework: {framework}, device: {actual_device})")
 
         if framework == "funasr":
+            logging.info("[MODEL] loading model %s (framework=%s, device=%s)", model_id, framework, actual_device)
             model = cls.load_funasr_model(config, actual_device)
+            logging.info("[MODEL] model ready: %s", model_id)
             return model, framework, None
 
         elif framework == "glmasr":
+            logging.info("[MODEL] loading model %s (framework=%s, device=%s)", model_id, framework, actual_device)
             model, processor = cls.load_glmasr_model(config, actual_device)
+            logging.info("[MODEL] model ready: %s", model_id)
             return model, framework, {"processor": processor}
 
         elif framework == "fireredasr":
+            logging.info("[MODEL] loading model %s (framework=%s, device=%s)", model_id, framework, actual_device)
             model, use_gpu = cls.load_fireredasr_model(config, actual_device)
+            logging.info("[MODEL] model ready: %s", model_id)
             return model, framework, {"use_gpu": use_gpu}
 
         elif framework == "faster-whisper":
+            logging.info("[MODEL] loading model %s (framework=%s, device=%s)", model_id, framework, actual_device)
             model = cls.load_faster_whisper_model(config, actual_device)
+            logging.info("[MODEL] model ready: %s", model_id)
             return model, framework, None
 
         else:
@@ -241,6 +255,7 @@ def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
         data, sr = sf.read(audio_path, dtype="int16")
     except Exception:
         return audio_path
+    logging.info("[AUDIO] loaded %s: %.1fs, %dHz", audio_path, len(data)/sr, sr)
     chunk_size = int(chunk_ms * sr / 1000)
     total_chunks = len(data) // chunk_size
     min_clean_chunks = max(1, int(min_clean_ms / chunk_ms))
@@ -252,6 +267,7 @@ def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
     first_chunk = data[:chunk_size]
     first_rms = np.sqrt(np.mean(first_chunk.astype(np.float64) ** 2))
     if first_rms < threshold:
+        logging.info("[AUDIO] no clipping detected, using original")
         return audio_path
 
     # Find where clipping ends: need min_clean_chunks consecutive clean chunks
@@ -271,6 +287,7 @@ def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
 
     if clip_end >= total_chunks:
         # All chunks are clipping — return original unchanged
+        logging.info("[AUDIO] entire audio is clipping, using original")
         return audio_path
 
     trim_sample = clip_end * chunk_size
@@ -284,6 +301,7 @@ def _trim_leading_clipping(audio_path: str, threshold: float = 30000,
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     sf.write(tmp.name, trimmed, sr, subtype="PCM_16")
+    logging.info("[AUDIO] trimmed %.0fms clipping → %s", trimmed_ms, tmp.name)
     return tmp.name
 
 
@@ -311,10 +329,12 @@ def _chunk_audio(audio_path: str, chunk_sec: int = 30) -> List[str]:
                 sf.write(chunk_path, data, f.samplerate)
                 chunk_paths.append(chunk_path)
                 i += 1
-    except Exception:
+    except Exception as e:
+        logging.info("[CHUNK] chunking failed: %s", e)
         for p in chunk_paths:
             Path(p).unlink(missing_ok=True)
         raise
+    logging.info("[CHUNK] split audio into %d chunks (%.1fs each)", len(chunk_paths), chunk_sec)
     return chunk_paths
 
 
@@ -350,13 +370,18 @@ class ModelInference:
             try:
                 result = model.generate(input=audio_path, hotword=hotwords)
             except TypeError:
+                logging.info("[ASR] FunASR hotword not supported, retrying without")
                 result = model.generate(input=audio_path)
 
         if result and len(result) > 0:
             text = result[0].get("text", "")
             # SenseVoice outputs special tokens: <|zh|><|HAPPY|><|Speech|><|woitn|>
             # Strip all <|...|> tags to get clean transcription text
+            raw_text = text
             text = re.sub(r'<\|[^|]*\|>', '', text).strip()
+            if raw_text != text:
+                logging.info("[ASR] stripped special tokens from FunASR output")
+            logging.info("[ASR] FunASR transcription complete (%d chars)", len(text))
             return text
         return ""
 
@@ -395,6 +420,7 @@ class ModelInference:
             clean_up_tokenization_spaces=False
         )[0]
 
+        logging.info("[ASR] Transformers transcription complete (%d chars)", len(response))
         return response
 
     @staticmethod
@@ -418,7 +444,9 @@ class ModelInference:
             outputs[:, inputs.input_ids.shape[1]:],
             skip_special_tokens=True
         )
-        return decoded[0] if decoded else ""
+        text = decoded[0] if decoded else ""
+        logging.info("[ASR] GLM-ASR transcription complete (%d chars)", len(text))
+        return text
 
     @staticmethod
     def _transcribe_firered_single(model, audio_path: str, use_gpu: bool) -> str:
@@ -445,7 +473,9 @@ class ModelInference:
         duration = info.duration
 
         if duration <= 30:
-            return ModelInference._transcribe_firered_single(model, audio_path, use_gpu)
+            text = ModelInference._transcribe_firered_single(model, audio_path, use_gpu)
+            logging.info("[ASR] FireRedASR single-file transcription complete (%d chars)", len(text))
+            return text
 
         # Long audio: chunk into 30s segments to avoid OOM
         logging.info(f"FireRedASR: audio {duration:.1f}s > 30s, chunking...")
@@ -459,7 +489,9 @@ class ModelInference:
             # Always clean up chunk files
             for chunk_path in chunks:
                 Path(chunk_path).unlink(missing_ok=True)
-        return "".join(texts)
+        result = "".join(texts)
+        logging.info("[ASR] FireRedASR chunked transcription: %d chunks → %d chars", len(chunks), len(result))
+        return result
 
     @staticmethod
     def transcribe_faster_whisper(model: Any, audio_path: str) -> str:
@@ -469,7 +501,9 @@ class ModelInference:
         Language auto-detected (not forced) to handle mixed Chinese-English.
         """
         segments, _info = model.transcribe(audio_path)
-        return "".join(segment.text for segment in segments)
+        text = "".join(segment.text for segment in segments)
+        logging.info("[ASR] faster-whisper transcription complete (%d chars)", len(text))
+        return text
 
     @classmethod
     def transcribe(
@@ -486,6 +520,9 @@ class ModelInference:
         try:
             # Trim leading clipping from arecord startup
             audio_path = _trim_leading_clipping(audio_path)
+            logging.info("[AUDIO] clipping check: %s", "trimmed" if audio_path != original_path else "clean")
+
+            logging.info("[ASR] transcribing with framework=%s", framework)
 
             if framework == "funasr":
                 return cls.transcribe_funasr(model, audio_path, model_id, hotwords)

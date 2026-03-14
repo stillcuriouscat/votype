@@ -469,7 +469,7 @@ class TestVertexGuardConditions:
             "model": "gemini-2.5-flash",
             "vertex_region": "us-central1",
             "timeout": 15,
-            "min_text_len": 45,
+            "min_text_len": 15,
         }
         result = process_with_vertex_ai("", config, "")
         assert result == ""

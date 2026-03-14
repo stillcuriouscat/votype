@@ -70,8 +70,15 @@ def load_vocab(vocab_path=None):
             data = json.load(f)
         if not isinstance(data, dict):
             return {}
+        logging.info("[VOCAB] loaded %d entries from %s", len(data), path)
         return data
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        logging.info("[VOCAB] no vocab file found, starting empty")
+        return {}
+    except json.JSONDecodeError as e:
+        logging.info("[VOCAB] corrupt vocab file, starting empty: %s", e)
+        return {}
+    except OSError:
         return {}
 
 
@@ -110,20 +117,26 @@ def apply_vocab(text, vocab, min_count):
     # Sort by variant length descending — longer variants first (R2-M1)
     pairs.sort(key=lambda p: len(p[0]), reverse=True)
 
+    replacement_count = 0
     result = text
     for variant, correct_term in pairs:
         # Detect if variant is Chinese (contains CJK characters)
         if re.search(r'[\u4e00-\u9fff]', variant):
             # Chinese: no word boundary
             pattern = re.escape(variant)
-            result = re.sub(pattern, correct_term, result)
+            new_result = re.sub(pattern, correct_term, result)
         else:
             # English: ASCII letter boundary + case-insensitive (R2-L1)
             # Use (?<![a-zA-Z]) and (?![a-zA-Z]) instead of \b because
             # Python treats CJK as \w, so \b won't match at CJK-English boundaries
             pattern = r'(?<![a-zA-Z])' + re.escape(variant) + r'(?![a-zA-Z])'
-            result = re.sub(pattern, correct_term, result, flags=re.IGNORECASE)
+            new_result = re.sub(pattern, correct_term, result, flags=re.IGNORECASE)
+        if new_result != result:
+            replacement_count += 1
+        result = new_result
 
+    if replacement_count > 0:
+        logging.info("[VOCAB] applied %d vocab replacements", replacement_count)
     return result
 
 
@@ -143,6 +156,7 @@ def glossary_context(vocab):
         return ""
 
     terms = list(vocab.keys())
+    logging.info("[VOCAB] glossary context: %d terms", len(terms))
     return "Commonly used terms: " + ", ".join(terms)
 
 
@@ -165,7 +179,7 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
         return ""
 
     # Text too short: skip SSH call (not worth the latency)
-    min_text_len = config.get("min_text_len", 45)
+    min_text_len = config.get("min_text_len", 15)
     if len(text) < min_text_len:
         logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
         return text
@@ -175,6 +189,7 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     if "system_prompt_file" in config:
         prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
         system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+        logging.info("[PROMPT] loaded system prompt: %s", prompt_path)
     else:
         system_prompt = config.get("system_prompt", "")
     if glossary_ctx:
@@ -184,6 +199,7 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     if "user_prompt_template_file" in config:
         tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
         user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+        logging.info("[PROMPT] loaded user template: %s", tpl_path)
     else:
         user_prompt_template = config.get("user_prompt_template")
     user_input = user_prompt_template.format(text=text) if user_prompt_template else text
@@ -239,6 +255,7 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
         )
         return text
 
+    logging.info("[SSH] haiku-fix success: %d→%d chars", len(text), len(output))
     return output
 
 
@@ -257,17 +274,37 @@ def _run_vertex_proxy(cmd, stdin_data, timeout, max_retries=1):
     Raises:
         subprocess.TimeoutExpired: If the subprocess times out (not retried).
     """
+    t0 = time.time()
     result = subprocess.run(
         cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
     )
+    elapsed = time.time() - t0
+
+    # Log remote traces from vertex_proxy.py stderr (sdk_init, gemini_api)
+    stderr = result.stderr or ""
+    trace_lines = [l for l in stderr.splitlines() if l.startswith("[TRACE]")]
+    remote_trace = ", ".join(l.replace("[TRACE] ", "") for l in trace_lines)
+    logging.info(
+        f"[TRACE] vertex_proxy round-trip: {elapsed:.2f}s (rc={result.returncode})"
+        + (f" | remote: {remote_trace}" if remote_trace else "")
+    )
 
     if result.returncode != 0 and max_retries > 0:
-        stderr = result.stderr or ""
-        if "429" in stderr or "RESOURCE_EXHAUSTED" in stderr:
+        non_trace_stderr = "\n".join(l for l in stderr.splitlines() if not l.startswith("[TRACE]"))
+        if "429" in non_trace_stderr or "RESOURCE_EXHAUSTED" in non_trace_stderr:
             logging.info("Vertex AI 429, retrying in 2s...")
             time.sleep(2)
+            t0 = time.time()
             result = subprocess.run(
                 cmd, input=stdin_data, capture_output=True, text=True, timeout=timeout
+            )
+            elapsed = time.time() - t0
+            stderr2 = result.stderr or ""
+            trace_lines2 = [l for l in stderr2.splitlines() if l.startswith("[TRACE]")]
+            remote_trace2 = ", ".join(l.replace("[TRACE] ", "") for l in trace_lines2)
+            logging.info(
+                f"[TRACE] vertex_proxy retry: {elapsed:.2f}s (rc={result.returncode})"
+                + (f" | remote: {remote_trace2}" if remote_trace2 else "")
             )
 
     return result
@@ -292,7 +329,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
         return ""
 
     # Text too short: skip SSH call (not worth the latency)
-    min_text_len = config.get("min_text_len", 45)
+    min_text_len = config.get("min_text_len", 15)
     if len(text) < min_text_len:
         logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
         return text
@@ -302,6 +339,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
     if "system_prompt_file" in config:
         prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
         system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+        logging.info("[PROMPT] loaded system prompt: %s", prompt_path)
     else:
         system_prompt = config.get("system_prompt", "")
     if glossary_ctx:
@@ -311,6 +349,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
     if "user_prompt_template_file" in config:
         tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
         user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+        logging.info("[PROMPT] loaded user template: %s", tpl_path)
     else:
         user_prompt_template = config.get("user_prompt_template")
     user_input = user_prompt_template.format(text=text) if user_prompt_template else text
@@ -368,6 +407,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
         )
         return text
 
+    logging.info("[SSH] gemini-fix success: %d→%d chars", len(text), len(output))
     return output
 
 
@@ -394,7 +434,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
         return ""
 
     # Text too short: skip SSH call (not worth the latency)
-    min_text_len = config.get("min_text_len", 45)
+    min_text_len = config.get("min_text_len", 15)
     if len(primary_text) < min_text_len:
         logging.info(f"Text length {len(primary_text)} below min_text_len {min_text_len}, skipping merge")
         return primary_text
@@ -404,6 +444,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     if "system_prompt_file" in config:
         prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
         system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+        logging.info("[PROMPT] loaded system prompt: %s", prompt_path)
     else:
         system_prompt = config.get("system_prompt", "")
     if glossary_ctx:
@@ -466,6 +507,12 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
         )
         return primary_text
 
+    logging.info(
+        "[SSH] gemini-merge success: primary=%d, secondary=%s → %d chars",
+        len(primary_text),
+        str(len(secondary_text)) if secondary_text else "None",
+        len(output),
+    )
     return output
 
 
@@ -528,6 +575,7 @@ def diff_to_vocab(original, polished, vocab):
     pol_tokens = _tokenize_for_diff(polished)
 
     new_vocab = copy.deepcopy(vocab)
+    extracted_count = 0
 
     matcher = difflib.SequenceMatcher(None, orig_tokens, pol_tokens)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -551,7 +599,10 @@ def diff_to_vocab(original, polished, vocab):
             }
         else:
             new_vocab[correct] = {"variants": {error: 1}}
+        extracted_count += 1
 
+    if extracted_count > 0:
+        logging.info("[VOCAB] extracted %d correction pairs from diff", extracted_count)
     return new_vocab
 
 
@@ -569,6 +620,7 @@ def save_vocab(vocab, vocab_path=None):
     path = Path(vocab_path) if vocab_path else VOCAB_PATH
 
     # Merge with on-disk vocab to preserve externally-added entries
+    logging.info("[VOCAB] merging %d in-memory + on-disk entries", len(vocab))
     disk_vocab = load_vocab(str(path))
     merged = copy.deepcopy(disk_vocab)
     for term, data in vocab.items():
@@ -589,6 +641,7 @@ def save_vocab(vocab, vocab_path=None):
         f.write("\n")
 
     tmp_path.rename(path)
+    logging.info("[VOCAB] saved %d entries to %s", len(merged), path)
 
 
 class PostProcessorLoader:
@@ -611,6 +664,7 @@ class PostProcessorLoader:
 
         punc_config = FireRedPuncConfig(use_gpu=False)
         model = FireRedPunc.from_pretrained(model_dir, punc_config)
+        logging.info("[PUNC] FireRedPunc loaded successfully")
         return model
 
     @staticmethod
@@ -634,6 +688,7 @@ class PostProcessorLoader:
             n_gpu_layers=config.get("n_gpu_layers", -1),
             verbose=False,
         )
+        logging.info("[LLM] Llama model loaded: %s", model_path)
         return model
 
     @classmethod
@@ -655,6 +710,7 @@ class PostProcessorLoader:
 
         preset = POST_PROCESSOR_PRESETS[preset_id]
         framework = preset["framework"]
+        logging.info("[POST] loading post-processor %s (framework=%s)", preset_id, framework)
 
         if framework == "regex":
             return None  # No model needed

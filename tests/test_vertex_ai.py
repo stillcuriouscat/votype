@@ -22,7 +22,7 @@ BASE_CONFIG = {
     "model": "gemini-2.5-flash",
     "vertex_region": "us-central1",
     "timeout": 15,
-    "min_text_len": 45,
+    "min_text_len": 15,
     "vocab_min_count": 3,
     "system_prompt": "You are an ASR correction tool.",
 }
@@ -110,7 +110,7 @@ class TestProcessWithVertexAiGuards:
 
     @patch("post_processor_configs.subprocess.run")
     def test_text_below_min_len_returns_original(self, mock_run):
-        short_text = "hi"  # Below min_text_len=45
+        short_text = "hi"  # Below min_text_len=15
         result = process_with_vertex_ai(short_text, BASE_CONFIG)
         assert result == short_text
         mock_run.assert_not_called()
@@ -199,7 +199,7 @@ class TestGeminiFixPreset:
         assert config["model"] == "gemini-2.5-flash"
         assert config["vertex_region"] == "us-central1"
         assert config["timeout"] == 15
-        assert config["min_text_len"] == 45
+        assert config["min_text_len"] == 15
         assert config["vocab_min_count"] == 3
 
     def test_gemini_fix_prompt_file(self):

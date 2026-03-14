@@ -63,7 +63,7 @@ POST_PROCESSOR_PRESETS = {
             "claude_path": "/home/ubuntu/.local/bin/claude",
             "model": "claude-haiku-4-5-20251001",
             "timeout": 15,
-            "min_text_len": 45,
+            "min_text_len": 15,
 
             "vocab_min_count": 3,
             # Prompt files adapted from voxy (github.com/hahagood/voxy)
@@ -88,7 +88,7 @@ POST_PROCESSOR_PRESETS = {
             "model": "gemini-2.5-flash",
             "vertex_region": "us-central1",
             "timeout": 15,
-            "min_text_len": 45,
+            "min_text_len": 15,
 
             "vocab_min_count": 3,
             # Prompt file: copy of haiku-fix-system.txt without /no_think (Claude-specific)
@@ -107,7 +107,7 @@ POST_PROCESSOR_PRESETS = {
             "model": "gemini-2.5-flash",
             "vertex_region": "us-central1",
             "timeout": 15,
-            "min_text_len": 45,
+            "min_text_len": 15,
 
             "vocab_min_count": 3,
             "system_prompt_file": "prompts/gemini-merge-system.txt",
