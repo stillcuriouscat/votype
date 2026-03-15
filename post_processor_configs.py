@@ -429,13 +429,23 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     Returns:
         Merged/polished text on success, primary_text on any failure.
     """
-    # Empty text: return immediately
+    # Empty text: fall back to secondary if available
     if not primary_text:
+        if secondary_text and len(secondary_text) >= 1:
+            logging.info(f"Primary empty, falling back to secondary ({len(secondary_text)} chars)")
+            return secondary_text
         return ""
 
     # Text too short: skip SSH call (not worth the latency)
+    # But if secondary has more content, use it as fallback instead of discarding
     min_text_len = config.get("min_text_len", 15)
     if len(primary_text) < min_text_len:
+        if secondary_text and len(secondary_text) > len(primary_text):
+            logging.info(
+                f"Primary too short ({len(primary_text)} chars), "
+                f"falling back to secondary ({len(secondary_text)} chars)"
+            )
+            return secondary_text
         logging.info(f"Text length {len(primary_text)} below min_text_len {min_text_len}, skipping merge")
         return primary_text
 
@@ -453,8 +463,10 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     # Build user input: dual or single format
     if secondary_text is not None:
         user_input = f"Chinese ASR: {primary_text}\nEnglish ASR: {secondary_text}"
+        logging.info(f"[MERGE] primary={len(primary_text)} chars, secondary={len(secondary_text)} chars")
     else:
         user_input = f"Chinese ASR: {primary_text}"
+        logging.info(f"[MERGE] primary={len(primary_text)} chars, secondary=None")
 
     # Build SSH command to call vertex_proxy.py on Oracle
     cmd = [

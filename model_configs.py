@@ -366,6 +366,8 @@ class ModelInference:
                 language="中文",
                 itn=True
             )
+        elif model_id == "sensevoice":
+            result = model.generate(input=audio_path, language="zh")
         else:
             try:
                 result = model.generate(input=audio_path, hotword=hotwords)
