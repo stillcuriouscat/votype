@@ -259,14 +259,17 @@ def process_with_ssh_claude(text, config, glossary_ctx=""):
     return output
 
 
-def _run_vertex_proxy(cmd, stdin_data, timeout, max_retries=1):
+def _run_vertex_proxy(cmd, stdin_data, timeout, max_retries=1, fallback_model=None):
     """Run vertex_proxy.py via subprocess with retry on 429 RESOURCE_EXHAUSTED.
+
+    After retry with same model fails on 429, optionally tries a fallback model.
 
     Args:
         cmd: Command list for subprocess.run.
         stdin_data: JSON string to send via stdin.
         timeout: Timeout in seconds for each attempt.
         max_retries: Number of retries on 429 errors (default 1).
+        fallback_model: Alternative model name to try after 429 retry failure (default None).
 
     Returns:
         subprocess.CompletedProcess from the last attempt.
@@ -306,6 +309,31 @@ def _run_vertex_proxy(cmd, stdin_data, timeout, max_retries=1):
                 f"[TRACE] vertex_proxy retry: {elapsed:.2f}s (rc={result.returncode})"
                 + (f" | remote: {remote_trace2}" if remote_trace2 else "")
             )
+
+            # If retry also failed with 429 and fallback_model is available, try fallback
+            if result.returncode != 0 and fallback_model:
+                non_trace_stderr2 = "\n".join(
+                    l for l in stderr2.splitlines() if not l.startswith("[TRACE]")
+                )
+                if "429" in non_trace_stderr2 or "RESOURCE_EXHAUSTED" in non_trace_stderr2:
+                    # Replace model in stdin_data JSON
+                    payload = json.loads(stdin_data)
+                    payload["model"] = fallback_model
+                    fallback_stdin = json.dumps(payload, ensure_ascii=False)
+
+                    t0 = time.time()
+                    result = subprocess.run(
+                        cmd, input=fallback_stdin, capture_output=True, text=True, timeout=timeout
+                    )
+                    elapsed = time.time() - t0
+                    stderr3 = result.stderr or ""
+                    trace_lines3 = [l for l in stderr3.splitlines() if l.startswith("[TRACE]")]
+                    remote_trace3 = ", ".join(l.replace("[TRACE] ", "") for l in trace_lines3)
+                    logging.info(
+                        f"[TRACE] vertex_proxy fallback to {fallback_model}: {elapsed:.2f}s"
+                        f" (rc={result.returncode})"
+                        + (f" | remote: {remote_trace3}" if remote_trace3 else "")
+                    )
 
     return result
 
@@ -371,8 +399,10 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
 
     timeout = config.get("timeout", 15)
 
+    fallback_model = config.get("fallback_model", None)
+
     try:
-        result = _run_vertex_proxy(cmd, stdin_data, timeout)
+        result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=fallback_model)
     except subprocess.TimeoutExpired:
         logging.warning(f"Vertex AI timed out after {timeout}s")
         from voice_input import notify
@@ -484,9 +514,10 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     }, ensure_ascii=False)
 
     timeout = config.get("timeout", 15)
+    fallback_model = config.get("fallback_model", None)
 
     try:
-        result = _run_vertex_proxy(cmd, stdin_data, timeout)
+        result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=fallback_model)
     except subprocess.TimeoutExpired:
         logging.warning(f"Gemini merge timed out after {timeout}s")
         from voice_input import notify
