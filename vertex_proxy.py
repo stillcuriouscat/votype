@@ -5,7 +5,7 @@ Reads JSON from stdin, calls Gemini 2.5 Flash via google-genai SDK,
 writes corrected text to stdout.
 
 Usage:
-    echo '{"system_prompt": "...", "user_input": "...", "model": "gemini-2.5-flash", "region": "us-central1"}' | python3 vertex_proxy.py
+    echo '{"system_prompt": "...", "user_input": "...", "model": "gemini-2.5-flash", "region": "global"}' | python3 vertex_proxy.py
     python3 vertex_proxy.py --help
     python3 vertex_proxy.py --test
 
@@ -63,7 +63,7 @@ def print_help():
         "  system_prompt  System instruction for Gemini\n"
         "  user_input     User text to process\n"
         "  model          Gemini model name (default: gemini-2.5-flash)\n"
-        "  region         Vertex AI region (default: us-central1)\n"
+        "  region         Vertex AI region (default: global)\n"
         "\n"
         "Stdout: corrected text (plain text, no JSON wrapping)\n"
         "Exit 0 = success, exit 1 = failure (stderr has error message)"
@@ -81,7 +81,7 @@ def run_test():
         client = genai.Client(
             vertexai=True,
             project=GCP_PROJECT,
-            location="us-central1",
+            location="global",
         )
         # Actually validate credentials by making a lightweight API call
         models = list(client.models.list(config={"page_size": 1}))
@@ -120,7 +120,7 @@ def main():
     system_prompt = data.get("system_prompt", "")
     user_input = data.get("user_input", "")
     model = data.get("model", "gemini-2.5-flash")
-    region = data.get("region", "us-central1")
+    region = data.get("region", "global")
 
     if not user_input:
         print("Missing 'user_input' in JSON", file=sys.stderr)

@@ -197,7 +197,7 @@ class TestGeminiFixPreset:
         assert config["ssh_host"] == "oracle-cloud"
         assert config["proxy_script"] == "~/vertex_proxy.py"
         assert config["model"] == "gemini-2.5-flash"
-        assert config["vertex_region"] == "us-central1"
+        assert config["vertex_region"] == "global"
         assert config["timeout"] == 15
         assert config["min_text_len"] == 15
         assert config["vocab_min_count"] == 3

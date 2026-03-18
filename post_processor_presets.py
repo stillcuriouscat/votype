@@ -87,7 +87,7 @@ POST_PROCESSOR_PRESETS = {
             "proxy_script": "~/vertex_proxy.py",
             "model": "gemini-2.5-flash",
             "fallback_model": "gemini-2.5-flash-lite",
-            "vertex_region": "us-central1",
+            "vertex_region": "global",
             "timeout": 15,
             "min_text_len": 15,
 
@@ -107,7 +107,7 @@ POST_PROCESSOR_PRESETS = {
             "proxy_script": "~/vertex_proxy.py",
             "model": "gemini-2.5-flash",
             "fallback_model": "gemini-2.5-flash-lite",
-            "vertex_region": "us-central1",
+            "vertex_region": "global",
             "timeout": 15,
             "min_text_len": 15,
 

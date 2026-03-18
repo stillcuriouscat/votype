@@ -425,7 +425,7 @@ class TestGeminiMergePreset:
 
     def test_vertex_region(self):
         """BT#7."""
-        assert self.config["vertex_region"] == "us-central1"
+        assert self.config["vertex_region"] == "global"
 
     def test_timeout(self):
         """BT#8."""

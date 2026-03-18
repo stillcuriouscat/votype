@@ -438,7 +438,7 @@ class TestVertexPresetStructure:
         assert "model" in config
         assert config["model"] == "gemini-2.5-flash"
         assert "vertex_region" in config
-        assert config["vertex_region"] == "us-central1"
+        assert config["vertex_region"] == "global"
         assert "timeout" in config
         assert "min_text_len" in config
         assert "vocab_min_count" in config

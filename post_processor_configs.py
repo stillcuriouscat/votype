@@ -394,7 +394,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
         "system_prompt": system_prompt,
         "user_input": user_input,
         "model": config.get("model", "gemini-2.5-flash"),
-        "region": config.get("vertex_region", "us-central1"),
+        "region": config.get("vertex_region", "global"),
     }, ensure_ascii=False)
 
     timeout = config.get("timeout", 15)
@@ -510,7 +510,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
         "system_prompt": system_prompt,
         "user_input": user_input,
         "model": config.get("model", "gemini-2.5-flash"),
-        "region": config.get("vertex_region", "us-central1"),
+        "region": config.get("vertex_region", "global"),
     }, ensure_ascii=False)
 
     timeout = config.get("timeout", 15)
