@@ -2,6 +2,19 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-18 - US-003 (Global Endpoint)
+- Changed vertex_region from 'us-central1' to 'global' in gemini-fix and gemini-merge presets
+- Updated vertex_proxy.py defaults (location, region, help text, docstring)
+- Updated post_processor_configs.py fallback defaults for both process_with_vertex_ai and process_with_gemini_merge
+- Created tests/test_global_endpoint.py with 7 tests (4 preset + 3 region flow), all passing
+- Updated 3 existing test files that asserted on preset vertex_region value
+- Files changed: post_processor_presets.py, vertex_proxy.py, post_processor_configs.py, tests/test_global_endpoint.py (new), tests/test_vertex_ai.py, tests/test_spec_gemini_merge.py, tests/test_e2e_virtual_ssh.py
+- **Learnings for future iterations:**
+  - vertex_proxy.py reads 'region' from stdin JSON, so presets control the actual region used
+  - post_processor_configs.py has fallback defaults in .get("vertex_region", ...) that also need updating
+  - 7 pre-existing failures unrelated to this change (hallucination guard 5x→2x, system_prompt migration, gemini-merge guard logic)
+---
+
 ## 2026-03-18 - US-002 (429 Fallback)
 - Added `fallback_model` parameter to `_run_vertex_proxy()` — tries alternative model after 429 retry failure
 - Added `fallback_model='gemini-2.5-flash-lite'` to gemini-fix and gemini-merge presets
