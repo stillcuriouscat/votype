@@ -1,175 +1,53 @@
 {
   "project": "Votype",
-  "branchName": "ralph/dual-asr-fusion",
-  "description": "Add faster-whisper as secondary ASR model running alongside FireRedASR. When gemini-merge post-processor is active, both models transcribe the same audio, and Gemini merges the results — keeping Chinese from FireRedASR and English terms from faster-whisper. Fallback to single-ASR gemini-fix if secondary model fails.",
+  "branchName": "ralph/sensevoice-itn-429-fallback",
+  "description": "Two improvements: (1) Enable SenseVoice built-in punctuation via use_itn=True so raw ASR output has punctuation even without Gemini post-processing. (2) Add fallback to alternative Gemini model when primary model returns 429/RESOURCE_EXHAUSTED after retry.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Add faster-whisper framework to ModelLoader and ModelInference",
-      "description": "Add 'faster-whisper' framework support in model_configs.py. ModelLoader loads WhisperModel with CPU-only, large-v3-turbo, int8 compute. ModelInference transcribes by joining segments. Language auto-detected (not forced) to handle mixed Chinese-English.",
+      "title": "Enable SenseVoice built-in punctuation with use_itn=True",
+      "description": "SenseVoice supports Inverse Text Normalization (ITN) which adds punctuation to output. Currently use_itn defaults to False, so raw ASR output has no punctuation. When Gemini merge times out or fails, the fallback text has no punctuation at all. Enable use_itn=True for SenseVoice to ensure punctuation is always present.",
       "acceptanceCriteria": [
-        "ModelLoader.load_faster_whisper_model() creates WhisperModel(model_size, device='cpu', compute_type='int8')",
-        "ModelLoader.load_model() dispatches framework='faster-whisper' to load_faster_whisper_model()",
-        "ModelInference.transcribe_faster_whisper(model, audio_path) returns joined text from model.transcribe() segments",
-        "Language parameter NOT forced — auto-detection handles mixed Chinese-English",
-        "Model downloads automatically on first use via HuggingFace hub (cached in ~/.cache/huggingface/)",
-        "Error handling: import failure or model load failure raises clear error with install instructions",
-        "CRITIC-R10-L2: model.transcribe() returns Tuple[Iterable[Segment], TranscriptionInfo] — must unpack: segments, info = model.transcribe(audio_path), iterate segments only",
-        "CRITIC-R10-L3: faster-whisper DOES support hotwords param — plan should not claim otherwise. Hotwords not used for secondary ASR but available for standalone mode",
+        "model_configs.py transcribe_funasr(): sensevoice branch passes use_itn=True to model.generate()",
+        "Existing language='zh' parameter preserved alongside use_itn=True",
+        "Other FunASR models (fun-asr-nano, paraformer) NOT affected — only sensevoice branch",
+        "Unit test: transcribe_funasr with model_id='sensevoice' passes use_itn=True to model.generate()",
+        "Unit test: transcribe_funasr with model_id='fun-asr-nano' does NOT pass use_itn",
+        "Unit test: transcribe_funasr with other model_ids (paraformer) does NOT pass use_itn",
+        "Integration test: mock SenseVoice model.generate() verifies use_itn=True is in kwargs",
+        "Existing tests pass unchanged",
+        "E2E test: run voice-e2e-test skill (short 8s audio) — daemon must be restarted first",
+        "E2E test: run test_e2e_kitty.py --duration 35 (long audio, verifies VAD chunking still works with use_itn)",
         "Tests pass"
       ],
       "priority": 1,
-      "passes": true
+      "passes": false
     },
     {
       "id": "US-002",
-      "title": "Add faster-whisper standalone model preset",
-      "description": "Add 'faster-whisper' entry to MODEL_PRESETS in model_presets.py so users can use it as primary ASR model. CPU-only to avoid VRAM conflict with FireRedASR.",
+      "title": "Add 429 fallback to alternative Gemini model",
+      "description": "When _run_vertex_proxy() gets 429 RESOURCE_EXHAUSTED and the retry also fails, try a fallback model (gemini-2.5-flash-lite) before giving up. This reduces the chance of returning raw unpunctuated text to the user.",
       "acceptanceCriteria": [
-        "MODEL_PRESETS has 'faster-whisper' entry with framework='faster-whisper', punctuation='builtin'",
-        "force_cpu=True in preset (Whisper must not compete with FireRedASR for VRAM)",
-        "config includes model_size='large-v3-turbo', compute_type='int8'",
-        "Preset has descriptive name and description mentioning English strength and CPU-only",
-        "Existing presets unchanged",
+        "_run_vertex_proxy() accepts optional fallback_model parameter (default None)",
+        "When retry with same model fails on 429: if fallback_model is set, modify stdin_data JSON to use fallback_model and try once more",
+        "Fallback attempt has same timeout as original",
+        "Log the fallback attempt: '[TRACE] vertex_proxy fallback to {model}: Xs'",
+        "process_with_vertex_ai() passes fallback_model from config.get('fallback_model', None)",
+        "process_with_gemini_merge() passes fallback_model from config.get('fallback_model', None)",
+        "gemini-fix and gemini-merge presets in post_processor_presets.py get new config field: fallback_model='gemini-2.5-flash-lite'",
+        "Unit test: _run_vertex_proxy tries fallback model after 429 retry failure",
+        "Unit test: _run_vertex_proxy does NOT try fallback when fallback_model is None",
+        "Unit test: _run_vertex_proxy does NOT try fallback on non-429 errors",
+        "Unit test: fallback success returns the fallback result",
+        "Unit test: fallback failure returns the original failed result",
+        "Unit test: verify gemini-fix and gemini-merge presets have fallback_model field",
+        "Integration test: mock subprocess to simulate 429 → retry 429 → fallback success flow",
+        "Existing tests pass unchanged",
+        "E2E test: run voice-e2e-test skill (short 8s audio) to verify normal path unaffected",
         "Tests pass"
       ],
       "priority": 2,
-      "passes": true
-    },
-    {
-      "id": "US-003",
-      "title": "Load faster-whisper as secondary ASR in ASRDaemon",
-      "description": "ASRDaemon loads faster-whisper as self._secondary_model when gemini-merge post-processor is selected. Loading is non-fatal — fusion degrades gracefully to single-ASR. Secondary model unloaded when switching away from gemini-merge.",
-      "acceptanceCriteria": [
-        "CRITIC-R10-L4: self._last_secondary_text = None must be initialized in __init__ alongside self._secondary_model = None",
-        "ASRDaemon._load_secondary_model() loads faster-whisper WhisperModel (CPU, large-v3-turbo, int8)",
-        "Called when post-processor switches to gemini-merge (in load_post_processor or _restore_post_processor)",
-        "self._secondary_model set to None when post-processor is not gemini-merge",
-        "Loading failure logs warning and sets self._secondary_model = None (non-fatal)",
-        "First-time model download may take time — log info message about download progress",
-        "Memory: ~1.5GB RAM for CPU model, acceptable alongside FireRedASR GPU",
-        "Tests pass"
-      ],
-      "priority": 3,
-      "passes": true
-    },
-    {
-      "id": "US-004",
-      "title": "Create gemini-merge prompt and process function",
-      "description": "New prompt file prompts/gemini-merge-system.txt instructs Gemini to merge two ASR transcriptions. New function process_with_gemini_merge() in post_processor_configs.py sends both texts to Gemini via vertex_proxy.py (same SSH mechanism as gemini-fix).",
-      "acceptanceCriteria": [
-        "prompts/gemini-merge-system.txt contains merge instructions: keep Chinese from primary ASR, English terms from secondary ASR, resolve conflicts",
-        "Prompt includes: CS engineer domain context (consistent with gemini-fix-system.txt), glossary terms placeholder, examples of merge scenarios",
-        "Prompt emphasizes: secondary ASR (Whisper) is better at English technical terms; primary ASR (FireRedASR) is better at Chinese",
-        "process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx) in post_processor_configs.py",
-        "User input format: 'Chinese ASR: {primary}\\nEnglish ASR: {secondary}' — vertex_proxy.py unchanged",
-        "Same guards as gemini-fix: empty text, hallucination guard (2x), timeout, SSH error handling",
-        "min_text_len guard applies to primary_text (skip merge for short text)",
-        "On failure: return primary_text (not empty string)",
-        "Prompt file deployed as copy to ~/.local/share/voice-input/prompts/ (same as other prompt files)",
-        "CRITIC-R10-M1: When secondary_text is None (fallback), gemini-merge-system.txt MUST handle single-input case explicitly — include instruction like 'If only one transcription is provided, clean it up as an editor' so the same prompt works for both merge and fallback without switching system_prompt_file",
-        "Tests pass"
-      ],
-      "priority": 4,
-      "passes": true,
-      "notes": "CRITIC-R10-M1: fallback reuses same prompt+config, so prompt must be dual-purpose (merge when two inputs, polish when one input)."
-    },
-    {
-      "id": "US-005",
-      "title": "Add gemini-merge post-processor preset",
-      "description": "Add 'gemini-merge' preset to POST_PROCESSOR_PRESETS in post_processor_presets.py. Framework type 'vertex-ai-merge' to distinguish from single-text 'vertex-ai'. Shares most config with gemini-fix.",
-      "acceptanceCriteria": [
-        "POST_PROCESSOR_PRESETS has 'gemini-merge' entry with framework='vertex-ai-merge'",
-        "Config includes: model, vertex_region, ssh_host, timeout, min_text_len, max_text_len, system_prompt_file='gemini-merge-system.txt'",
-        "min_text_len=45 (same as gemini-fix — skip merge for short text)",
-        "PostProcessorLoader.load_post_processor() returns None for framework='vertex-ai-merge' (no local model needed)",
-        "Existing presets (none, haiku-fix, haiku-expand, gemini-fix) unchanged",
-        "CLI 'voice-input post-processor gemini-merge' switches to this preset",
-        "Tests pass"
-      ],
-      "priority": 5,
-      "passes": true
-    },
-    {
-      "id": "US-006",
-      "title": "Integrate dual ASR fusion into ASRDaemon pipeline",
-      "description": "Wire gemini-merge into ASRDaemon. _handle_transcribe() runs secondary model on same audio. _post_process() uses merge when gemini-merge is active. Fallback to primary-only if secondary fails.",
-      "acceptanceCriteria": [
-        "_handle_transcribe() runs secondary model transcription when self._secondary_model is not None",
-        "Secondary transcription stored as self._last_secondary_text (or passed through return value)",
-        "Secondary model failure: log warning, set secondary_text=None, continue with primary only",
-        "_post_process() for framework='vertex-ai-merge': pipeline is filler_removal → FireRedPunc → apply_vocab → gemini_merge(primary, secondary) → diff_to_vocab → save_vocab",
-        "When secondary_text is None (model failed): fallback to gemini-fix behavior (single text polish)",
-        "Dispatch dict updated to include 'vertex-ai-merge' alongside 'ssh-claude' and 'vertex-ai'",
-        "Switching to gemini-merge triggers _load_secondary_model(); switching away unloads it",
-        "Pipeline order: primary ASR processing happens first (filler removal, punc, vocab), then merge with raw secondary text",
-        "Secondary text does NOT go through filler removal or FireRedPunc (Whisper has built-in punctuation)",
-        "Tests pass"
-      ],
-      "priority": 6,
-      "passes": true
-    },
-    {
-      "id": "US-007",
-      "title": "Add tests for dual ASR fusion",
-      "description": "Unit tests for faster-whisper loader/inference, gemini-merge function, and integration. Follow existing test patterns (test_vertex_ai.py, test_ssh_claude.py).",
-      "acceptanceCriteria": [
-        "Unit tests for ModelLoader.load_faster_whisper_model() (mock WhisperModel import)",
-        "Unit tests for ModelInference.transcribe_faster_whisper() (mock model.transcribe, verify segment joining)",
-        "Unit tests for process_with_gemini_merge() guards (min_text_len, max_text_len, hallucination, empty text, None secondary)",
-        "Unit tests for gemini-merge user_input format construction",
-        "Unit test for secondary model load/unload on post-processor switch",
-        "Unit test for fallback behavior when secondary_text is None",
-        "Existing tests pass unchanged (regression)",
-        "Tests pass"
-      ],
-      "priority": 7,
-      "passes": true
-    },
-    {
-      "id": "US-008",
-      "title": "Parallelize FireRedASR and faster-whisper transcription",
-      "description": "Run FireRedASR (GPU, primary) and faster-whisper (CPU, secondary) in parallel using threading.Thread in _handle_transcribe(). FireRedASR runs in main thread (GPU), faster-whisper runs in background thread (CPU). Both release GIL via C extensions (PyTorch CUDA / CTranslate2), enabling true CPU+GPU parallelism. Reduces wall-clock latency by 0.1-2s per transcription.",
-      "acceptanceCriteria": [
-        "_handle_transcribe() starts secondary ASR in a background thread BEFORE primary ASR when _secondary_model is loaded",
-        "Primary ASR runs in main thread (GPU), secondary in background thread (CPU) — no resource conflict",
-        "Both threads must complete (join) before _post_process() is called",
-        "Secondary thread uses threading.Thread(daemon=True) with join(timeout=30) to prevent hangs",
-        "Secondary result collected via mutable dict (thread-safe after join due to happens-before guarantee)",
-        "When primary fails or returns empty text: _last_secondary_text = None (secondary result discarded)",
-        "When secondary fails or times out: _last_secondary_text = None, warning logged",
-        "When no secondary model loaded: _last_secondary_text = None (fix pre-existing stale data bug)",
-        "Remove min_text_len pre-check from _handle_transcribe — downstream process_with_gemini_merge() already has identical guard at post_processor_configs.py:368",
-        "Update FUNCTION_SPEC BT#4: secondary may start in parallel, result discarded on primary failure",
-        "Update test_spec_faster_whisper.py test_primary_failure_skips_secondary to match new spec",
-        "Fix test_integration_faster_whisper.py TestDualTranscription tests (pre-existing mock target mismatch)",
-        "No new dependencies — use stdlib threading (already imported)",
-        "Existing 444 passing tests remain passing (49 pre-existing failures not increased)",
-        "Tests pass"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": "Adversarial review PLAN_R1.md CONDITIONAL GO. Beads: voice_input-94f. See adversarial-review/parallelize-dual-asr/ for full plan and critique."
-    },
-    {
-      "id": "US-009",
-      "title": "Switch primary ASR from FireRedASR to SenseVoice Small GPU",
-      "description": "FireRedASR(7.2GB) + faster-whisper GPU(0.8GB) = 8.7GB > 8GB VRAM causes CUDA OOM. Switch primary ASR to SenseVoice Small(~0.5GB GPU) so both models fit in 8GB VRAM. SenseVoice has builtin punctuation, no FireRedPunc needed. Beads: voice_input-9ne.",
-      "acceptanceCriteria": [
-        "DEFAULT_MODEL changed from 'firered-asr' to 'sensevoice' in model_presets.py",
-        "SenseVoice loads on GPU (no force_cpu), VRAM usage ~0.5GB",
-        "faster-whisper secondary loads on GPU (int8_float16), VRAM usage ~0.8GB",
-        "Total VRAM < 2GB when both models loaded (gemini-merge mode)",
-        "Punctuation is 'builtin' for sensevoice — FireRedPunc NOT loaded (saves VRAM)",
-        "gemini-merge description updated to mention SenseVoice instead of FireRedASR",
-        "README.md updated with sensevoice as default",
-        "No new test failures introduced (baseline: 45 pre-existing failures)",
-        "E2E voice test passes (daemon restart, transcription works)",
-        "Tests pass"
-      ],
-      "priority": 9,
-      "passes": false,
-      "notes": "Beads: voice_input-9ne. Code changes done, needs daemon restart + E2E verification."
+      "passes": false
     }
   ]
 }
