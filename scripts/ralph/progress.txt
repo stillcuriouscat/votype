@@ -2,6 +2,29 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-18 - US-002 (429 Fallback)
+- Added `fallback_model` parameter to `_run_vertex_proxy()` — tries alternative model after 429 retry failure
+- Added `fallback_model='gemini-2.5-flash-lite'` to gemini-fix and gemini-merge presets
+- `process_with_vertex_ai()` and `process_with_gemini_merge()` pass fallback_model from config
+- Created `tests/test_429_fallback.py` with 17 tests (8 unit + 4 preset + 5 integration), all passing
+- Files changed: post_processor_configs.py, post_processor_presets.py, tests/test_429_fallback.py (new)
+- **Learnings for future iterations:**
+  - _run_vertex_proxy fallback replaces `model` in JSON stdin payload, not in command args
+  - Fallback only triggers on 429/RESOURCE_EXHAUSTED after retry also fails with 429
+  - 1 pre-existing failure: test_vertex_ai.py::test_output_within_5x_accepted (guard changed 5x→2x but test not updated)
+---
+
+## 2026-03-18 - US-001 (SenseVoice ITN)
+- Added `use_itn=True` to sensevoice branch in `transcribe_funasr()` (model_configs.py:370)
+- Created `tests/test_sensevoice_itn.py` with 8 tests (6 unit + 2 integration), all passing
+- Unit tests verify: sensevoice passes use_itn=True, fun-asr-nano and paraformer do NOT
+- Integration tests verify use_itn through full `ModelInference.transcribe()` path
+- Files changed: model_configs.py (1 line), tests/test_sensevoice_itn.py (new)
+- **Learnings for future iterations:**
+  - SenseVoice uses `use_itn` (underscore) while fun-asr-nano uses `itn` (no prefix) — different FunASR models have different parameter names
+  - 49 pre-existing test failures (soundfile missing, daemon running, haiku preset migration, etc.)
+---
+
 ## Codebase Patterns
 - ModelLoader: each framework has a static `load_<framework>_model()` method + `elif` in `load_model()` dispatch
 - ModelInference: each framework has a static `transcribe_<framework>()` method + `elif` in `transcribe()` dispatch
@@ -11,6 +34,7 @@ Started: Thu 12 Mar 2026 12:00:18 AM CST
 - Tests use `ASRDaemon.__new__(ASRDaemon)` to bypass __init__ — new attrs need explicit initialization in test fixtures
 - post_processor_configs.py functions use lazy import of `voice_input.notify` to avoid circular dependency
 - process_with_gemini_merge follows same SSH+vertex_proxy pattern as process_with_vertex_ai
+- _run_vertex_proxy 429 fallback: replaces model in JSON stdin_data payload, reuses same cmd and timeout
 ---
 
 ## 2026-03-12 - US-007
