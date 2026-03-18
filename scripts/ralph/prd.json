@@ -1,8 +1,25 @@
 {
   "project": "Votype",
   "branchName": "ralph/sensevoice-itn-429-fallback",
-  "description": "Two improvements: (1) Enable SenseVoice built-in punctuation via use_itn=True so raw ASR output has punctuation even without Gemini post-processing. (2) Add fallback to alternative Gemini model when primary model returns 429/RESOURCE_EXHAUSTED after retry.",
+  "description": "Three improvements: (1) Enable SenseVoice built-in punctuation via use_itn=True. (2) Add fallback to alternative Gemini model on 429. (3) Switch Vertex AI to global endpoint to reduce 429 frequency.",
   "userStories": [
+    {
+      "id": "US-003",
+      "title": "Switch Vertex AI from regional to global endpoint",
+      "description": "Change vertex_proxy.py location from 'us-central1' to 'global'. Global endpoint auto-routes to regions with available capacity, reducing 429 RESOURCE_EXHAUSTED errors. Free trial accounts are stuck in Tier 0 with low TPM baseline, and us-central1 is a high-contention region. Global endpoint alleviates both issues.",
+      "acceptanceCriteria": [
+        "vertex_proxy.py: genai.Client() location parameter changed from 'us-central1' to 'global'",
+        "post_processor_presets.py: gemini-fix and gemini-merge presets vertex_region changed from 'us-central1' to 'global'",
+        "The region value must come from stdin_data JSON (vertex_proxy.py reads 'region' field), so presets control it",
+        "Unit test: verify gemini-fix preset has vertex_region='global'",
+        "Unit test: verify gemini-merge preset has vertex_region='global'",
+        "Existing tests pass unchanged",
+        "E2E test: run voice-e2e-test skill (short 8s audio) to verify Vertex AI still works with global endpoint",
+        "Tests pass"
+      ],
+      "priority": 0,
+      "passes": false
+    },
     {
       "id": "US-001",
       "title": "Enable SenseVoice built-in punctuation with use_itn=True",
