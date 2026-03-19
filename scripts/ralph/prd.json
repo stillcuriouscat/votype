@@ -79,6 +79,7 @@
         "Keep daemon.sock (IPC still needed for transcribe command)",
         "CRITIC-R2-M1: Legacy file cleanup must be in voice_input.py ensure_config_dir() (NOT in state_db.py) — state_db.py cannot import voice_input constants due to circular import. ensure_config_dir() calls init_db() then deletes PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE if they exist",
         "CRITIC-R1-M2: Update or replace ALL existing tests that reference removed functions: rewrite test_post_processor_persistence.py to test DB-based persistence, update TestIsProcessRunning/TestIsRecording in test_unit.py to test new DB-based implementations, update test_race.py and test_e2e.py references to is_process_running()",
+        "CRITIC-R3-C1: tests/test_integration.py EXISTS (453+ lines) — must update 6 test methods that reference removed IPC commands (recording_start/recording_stop/set_idle) and PID_FILE-based state. Rewrite to verify DB state transitions instead of IPC calls. Also update conftest.py mock_daemon_server to remove stale command responses",
         "Unit tests for updated show_status()",
         "Unit tests for legacy file cleanup on first init",
         "E2E test: run voice-e2e-test skill (short 8s audio) to verify full pipeline works",
