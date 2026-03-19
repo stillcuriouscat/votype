@@ -44,9 +44,13 @@ def state_env(tmp_path, monkeypatch):
     pid_file = config_dir / "daemon.pid.recording"
     processing_file = config_dir / "processing.flag"
     audio_path_file = config_dir / "audio_path.txt"
+    daemon_lock_file = config_dir / "daemon.lock"
+    daemon_pid_file = config_dir / "daemon.pid"
     monkeypatch.setattr("voice_input.PID_FILE", pid_file)
     monkeypatch.setattr("voice_input.PROCESSING_FILE", processing_file)
     monkeypatch.setattr("voice_input.AUDIO_PATH_FILE", audio_path_file)
+    monkeypatch.setattr("voice_input.DAEMON_LOCK_FILE", daemon_lock_file)
+    monkeypatch.setattr("voice_input.DAEMON_PID_FILE", daemon_pid_file)
 
     init_db(state_db_path)
 

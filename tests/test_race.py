@@ -334,7 +334,7 @@ class TestSocketCommunicationRace:
 
                 daemon.handle_client(mock_client)
 
-                response = json.loads(mock_client.send.call_args[0][0].decode())
+                response = json.loads(mock_client.sendall.call_args[0][0].decode())
                 with lock:
                     results.append((request_id, response))
 

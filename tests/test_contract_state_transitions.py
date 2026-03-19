@@ -368,7 +368,8 @@ class TestToggleRecordingDbContract:
              patch("voice_input.start_recording") as mock_start, \
              patch("voice_input.stop_recording"), \
              patch("voice_input.is_recording", return_value=False), \
-             patch("voice_input.is_daemon_running", return_value=True):
+             patch("voice_input.is_daemon_running", return_value=True), \
+             patch("voice_input.is_daemon_ready", return_value=True):
             voice_input.toggle_recording()
 
         mock_start.assert_called_once()
@@ -381,7 +382,8 @@ class TestToggleRecordingDbContract:
              patch("voice_input.start_recording"), \
              patch("voice_input.stop_recording") as mock_stop, \
              patch("voice_input.is_recording", return_value=True), \
-             patch("voice_input.is_daemon_running", return_value=True):
+             patch("voice_input.is_daemon_running", return_value=True), \
+             patch("voice_input.is_daemon_ready", return_value=True):
             voice_input.toggle_recording()
 
         mock_stop.assert_called_once()
@@ -459,13 +461,15 @@ class TestIsDaemonRunningDbContract:
 
     def test_is_daemon_running_true_when_pid_alive(self, state_env):
         """is_daemon_running() returns True when DB daemon_pid is a live process."""
+        import builtins
         import voice_input
 
         update_state(state_env["state_db_path"],
                      daemon_pid=os.getpid())
 
         # Mock cmdline check if needed (the process must look like our daemon)
-        with patch("builtins.open", side_effect=lambda *a, **kw: open(*a, **kw)):
+        _real_open = builtins.open
+        with patch("builtins.open", side_effect=lambda *a, **kw: _real_open(*a, **kw)):
             result = voice_input.is_daemon_running()
 
         # Result depends on cmdline check — our test process isn't the daemon
