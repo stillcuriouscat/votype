@@ -2,6 +2,24 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-19 - US-003 (Daemon polls SQLite for icon status updates)
+- Added _sync_status_from_db() to ASRDaemon: polls DB for status changes, calls set_status() only if changed
+- Initialized _current_db_status='idle' in __init__ for delta tracking
+- socket_server() calls _sync_status_from_db() on every socket.timeout (1s polling)
+- run(): writes daemon_pid to DB after lock acquired, clears daemon_pid+status in shutdown cleanup
+- is_daemon_running(): reads daemon_pid from DB first, falls back to PID file for backward compat
+- load_post_processor(): writes post_processor to DB via update_state() instead of _persist_post_processor_id() file write
+- __init__: reads post_processor from DB via get_state() instead of _restore_post_processor_id() file read
+- Created tests/test_daemon_db.py with 25 tests (sync: 5, init: 4, socket: 1, pid_lifecycle: 3, is_daemon_running: 5, load_pp: 4, integration: 3), all passing
+- Files changed: voice_input.py, tests/test_daemon_db.py (new), scripts/ralph/prd.json
+- **Learnings for future iterations:**
+  - _sync_status_from_db must wrap all logic in try/except — DB errors should never crash the socket_server loop
+  - _current_db_status is a daemon-side cache; DB is the source of truth for CLI→daemon status sync
+  - is_daemon_running DB path is checked AFTER flock (flock is fastest), BEFORE PID file (PID file is legacy fallback)
+  - __init__ reads get_state() for post_processor, but validates against POST_PROCESSOR_PRESETS to handle stale/invalid DB values
+  - 50 total test failures: 47 pre-existing + 3 L1 Real E2E spec-first tests (require daemon restart with new code)
+---
+
 ## 2026-03-19 - US-002 (Migrate CLI state operations to SQLite)
 - Migrated is_recording(), start_recording(), stop_recording(), toggle_recording() from file-based state to SQLite DB
 - is_recording: reads DB status + verifies recording_pid liveness via os.kill(pid, 0)
@@ -82,6 +100,10 @@ Started: Thu 12 Mar 2026 12:00:18 AM CST
 - stop_recording reads get_state() snapshot BEFORE kill sequence — protects against concurrent state changes
 - Tests using isolated_environment get automatic state DB initialization via conftest.py
 - Tests that check is_daemon_running must also isolate DAEMON_LOCK_FILE (real daemon lock leaks otherwise)
+- Daemon polls DB every 1s via _sync_status_from_db() in socket_server timeout loop — replaces IPC status commands
+- Daemon __init__ reads post_processor from DB (not file) and validates against POST_PROCESSOR_PRESETS
+- is_daemon_running() checks: flock → DB daemon_pid → PID file (in priority order)
+- _make_daemon() helper in tests must include _current_db_status="idle" for __new__-constructed test instances
 - ModelLoader: each framework has a static `load_<framework>_model()` method + `elif` in `load_model()` dispatch
 - ModelInference: each framework has a static `transcribe_<framework>()` method + `elif` in `transcribe()` dispatch
 - `load_model()` returns `(model, framework, extra_data)` tuple — extra_data is None when no extra state needed

@@ -206,16 +206,42 @@ def _is_daemon_lock_held():
 
 
 def is_daemon_running():
-    """Check whether the daemon is running."""
-    # Fast path: check flock (covers startup race before PID file is written)
+    """Check whether the daemon is running.
+
+    Tries DB daemon_pid first, falls back to flock + PID file for
+    backward compatibility during transition.
+    """
+    # Fast path: check flock (covers startup race before PID/DB is written)
     if _is_daemon_lock_held():
         return True
+
+    # Try DB first: daemon writes daemon_pid on startup
+    state = get_state(STATE_DB_PATH)
+    db_pid = state.get("daemon_pid")
+    if db_pid is not None:
+        try:
+            os.kill(db_pid, 0)
+            # Verify this is actually our daemon
+            cmdline_path = Path(f"/proc/{db_pid}/cmdline")
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_text()
+                if "voice_input" not in cmdline and "voice-input" not in cmdline:
+                    update_state(STATE_DB_PATH, daemon_pid=None)
+                    _cleanup_daemon_files()
+                    return False
+            return True
+        except ProcessLookupError:
+            # Dead PID in DB — clean up
+            update_state(STATE_DB_PATH, daemon_pid=None)
+            _cleanup_daemon_files()
+            return False
+
+    # Fallback: PID file (backward compat — daemon may not have written to DB yet)
     if not DAEMON_PID_FILE.exists():
         return False
     try:
         pid = int(DAEMON_PID_FILE.read_text().strip())
         os.kill(pid, 0)
-        # Verify this is actually our daemon (PID may have been reused by another process)
         cmdline_path = Path(f"/proc/{pid}/cmdline")
         if cmdline_path.exists():
             cmdline = cmdline_path.read_text()
@@ -639,12 +665,16 @@ class ASRDaemon:
         self.indicator = None
         self.gtk_thread = None
         self.post_processor_model = None
-        self.current_post_processor_id = self._restore_post_processor_id()
+        # Read post_processor from DB (replaces _restore_post_processor_id file read)
+        db_state = get_state(STATE_DB_PATH)
+        saved_pp = db_state.get("post_processor", DEFAULT_POST_PROCESSOR)
+        self.current_post_processor_id = saved_pp if saved_pp in POST_PROCESSOR_PRESETS else DEFAULT_POST_PROCESSOR
         self.post_processor_framework = None
         self.punc_model = None  # Auto-punctuation model (separate from post-processor)
         self._vocab = {}  # Glossary vocab for ssh-claude (loaded in load_post_processor)
         self._secondary_model = None  # Secondary ASR model (faster-whisper for dual fusion)
         self._last_secondary_text = None  # Last secondary ASR transcription result
+        self._current_db_status = "idle"  # Tracks last DB status for polling delta
 
     @staticmethod
     def _restore_post_processor_id():
@@ -905,6 +935,22 @@ class ASRDaemon:
             _log("SECONDARY", "unloaded secondary ASR model")
             print("  Secondary ASR unloaded")
 
+    def _sync_status_from_db(self):
+        """Poll DB for status changes and update GTK icon if changed.
+
+        Called every 1 second in socket_server() timeout loop.
+        Never raises — all errors are caught and logged.
+        """
+        try:
+            state = get_state(STATE_DB_PATH)
+            new_status = state.get("status", "idle")
+            if new_status != self._current_db_status:
+                _log("SYNC", f"DB status changed: {self._current_db_status} → {new_status}")
+                self.set_status(new_status)
+                self._current_db_status = new_status
+        except Exception as e:
+            _log("ERROR", f"_sync_status_from_db failed: {e}")
+
     def load_post_processor(self, preset_id=None):
         """Load a post-processor model."""
         if preset_id is None:
@@ -928,7 +974,7 @@ class ASRDaemon:
         try:
             self.post_processor_model = PostProcessorLoader.load_post_processor(preset_id)
             self.current_post_processor_id = preset_id
-            self._persist_post_processor_id(preset_id)
+            update_state(STATE_DB_PATH, post_processor=preset_id)
             self.post_processor_framework = preset["framework"]
             # Load vocab once for SSH-based frameworks (cached on instance)
             if self.post_processor_framework in ("ssh-claude", "vertex-ai", "vertex-ai-merge"):
@@ -1231,6 +1277,7 @@ class ASRDaemon:
                 client, _ = server.accept()
                 threading.Thread(target=self.handle_client, args=(client,)).start()
             except socket.timeout:
+                self._sync_status_from_db()
                 continue
             except Exception as e:
                 if self.running:
@@ -1255,8 +1302,9 @@ class ASRDaemon:
             self._lock_fd.close()
             return
 
-        # Write PID file
+        # Write PID file and DB
         DAEMON_PID_FILE.write_text(str(os.getpid()))
+        update_state(STATE_DB_PATH, daemon_pid=os.getpid())
         _log("DAEMON", f"daemon PID written: {os.getpid()}")
 
         # Remove old socket file
@@ -1316,11 +1364,12 @@ class ASRDaemon:
         # Cleanup
         _log("DAEMON", "daemon shutdown initiated")
         self.running = False
+        update_state(STATE_DB_PATH, daemon_pid=None, status="idle")
         SOCKET_PATH.unlink(missing_ok=True)
         DAEMON_PID_FILE.unlink(missing_ok=True)
         if hasattr(self, '_lock_fd'):
             self._lock_fd.close()
-        _log("DAEMON", "daemon cleanup complete (socket, PID, lock)")
+        _log("DAEMON", "daemon cleanup complete (socket, PID, lock, DB)")
         print("Daemon stopped")
 
 
