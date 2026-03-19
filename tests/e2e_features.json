@@ -1,6 +1,6 @@
 {
   "project": "votype",
-  "last_run": "2026-03-13T19:21:45",
+  "last_run": "2026-03-18T15:57:21",
   "features": [
     {
       "id": "real-e2e-ssh-haiku-pipeline",
@@ -61,7 +61,7 @@
     {
       "id": "virtual-apply-vocab-chinese",
       "layer": "L2-virtual",
-      "description": "apply_vocab replaces Chinese error variants without word boundary (e.g. \u514b\u52b3\u7684->Claude\u7684)",
+      "description": "apply_vocab replaces Chinese error variants without word boundary (e.g. 克劳的->Claude的)",
       "passes": true,
       "last_error": null,
       "blocking": false
@@ -201,6 +201,54 @@
       "passes": true,
       "last_error": null,
       "blocking": false
+    },
+    {
+      "id": "real-e2e-sqlite-state-db-exists",
+      "layer": "L1",
+      "description": "state.db exists with correct schema (daemon_state table, WAL mode, all columns)",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-sqlite-state-transitions",
+      "layer": "L1",
+      "description": "DB status transitions: idle → recording (with PID) → processing → idle",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-sqlite-daemon-pid",
+      "layer": "L1",
+      "description": "Running daemon has daemon_pid in DB, PID is alive",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-sqlite-post-processor-persistence",
+      "layer": "L1",
+      "description": "Post-processor value persisted in DB, matches CLI status output",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-sqlite-legacy-cleanup",
+      "layer": "L1",
+      "description": "Legacy files (recording.pid, processing.flag, recording_path.txt, current_post_processor.txt) no longer exist",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
+    },
+    {
+      "id": "real-e2e-sqlite-cli-reads-db",
+      "layer": "L1",
+      "description": "voice-input status reads from DB, shows correct status",
+      "passes": false,
+      "last_error": null,
+      "blocking": true
     }
   ]
 }
