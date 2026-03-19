@@ -1,70 +1,86 @@
 {
   "project": "Votype",
-  "branchName": "ralph/sensevoice-itn-429-fallback",
-  "description": "Three improvements: (1) Enable SenseVoice built-in punctuation via use_itn=True. (2) Add fallback to alternative Gemini model on 429. (3) Switch Vertex AI to global endpoint to reduce 429 frequency.",
+  "branchName": "ralph/sqlite-state",
+  "description": "Replace fragmented file-based state management (PID files, processing.flag, IPC status commands) with a single SQLite database as the source of truth. CLI writes state directly to DB, daemon polls DB every second to update GTK icon. Eliminates icon/state inconsistency bugs caused by lost IPC messages.",
   "userStories": [
     {
-      "id": "US-003",
-      "title": "Switch Vertex AI from regional to global endpoint",
-      "description": "Change vertex_proxy.py location from 'us-central1' to 'global'. Global endpoint auto-routes to regions with available capacity, reducing 429 RESOURCE_EXHAUSTED errors. Free trial accounts are stuck in Tier 0 with low TPM baseline, and us-central1 is a high-contention region. Global endpoint alleviates both issues.",
-      "acceptanceCriteria": [
-        "vertex_proxy.py: genai.Client() location parameter changed from 'us-central1' to 'global'",
-        "post_processor_presets.py: gemini-fix and gemini-merge presets vertex_region changed from 'us-central1' to 'global'",
-        "The region value must come from stdin_data JSON (vertex_proxy.py reads 'region' field), so presets control it",
-        "Unit test: verify gemini-fix preset has vertex_region='global'",
-        "Unit test: verify gemini-merge preset has vertex_region='global'",
-        "Existing tests pass unchanged",
-        "E2E test: run voice-e2e-test skill (short 8s audio) to verify Vertex AI still works with global endpoint",
-        "Tests pass"
-      ],
-      "priority": 0,
-      "passes": true
-    },
-    {
       "id": "US-001",
-      "title": "Enable SenseVoice built-in punctuation with use_itn=True",
-      "description": "SenseVoice supports Inverse Text Normalization (ITN) which adds punctuation to output. Currently use_itn defaults to False, so raw ASR output has no punctuation. When Gemini merge times out or fails, the fallback text has no punctuation at all. Enable use_itn=True for SenseVoice to ensure punctuation is always present.",
+      "title": "Create state_db module with SQLite schema and accessors",
+      "description": "New module state_db.py providing init_db(), get_state(), update_state() functions. Single table daemon_state with one row (id=1). Schema: status TEXT, daemon_pid INTEGER, recording_pid INTEGER, recording_path TEXT, post_processor TEXT, updated_at TEXT. WAL mode for concurrent reader/writer. All writes use BEGIN IMMEDIATE transactions.",
       "acceptanceCriteria": [
-        "model_configs.py transcribe_funasr(): sensevoice branch passes use_itn=True to model.generate()",
-        "Existing language='zh' parameter preserved alongside use_itn=True",
-        "Other FunASR models (fun-asr-nano, paraformer) NOT affected — only sensevoice branch",
-        "Unit test: transcribe_funasr with model_id='sensevoice' passes use_itn=True to model.generate()",
-        "Unit test: transcribe_funasr with model_id='fun-asr-nano' does NOT pass use_itn",
-        "Unit test: transcribe_funasr with other model_ids (paraformer) does NOT pass use_itn",
-        "Integration test: mock SenseVoice model.generate() verifies use_itn=True is in kwargs",
-        "Existing tests pass unchanged",
-        "E2E test: run voice-e2e-test skill (short 8s audio) — daemon must be restarted first",
-        "E2E test: run test_e2e_kitty.py --duration 35 (long audio, verifies VAD chunking still works with use_itn)",
+        "state_db.py created with init_db(db_path), get_state(db_path) -> dict, update_state(db_path, **kwargs) functions",
+        "DB path: ~/.config/voice-input/state.db",
+        "Schema: daemon_state table with columns: id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL DEFAULT 'idle', daemon_pid INTEGER, recording_pid INTEGER, recording_path TEXT, post_processor TEXT NOT NULL DEFAULT 'none', updated_at TEXT",
+        "init_db() creates table if not exists, inserts default row if empty, enables WAL mode",
+        "update_state() uses BEGIN IMMEDIATE transaction, updates updated_at automatically",
+        "get_state() returns dict with all column values",
+        "Thread-safe: each call opens/closes its own connection (no shared connection across threads)",
+        "Unit tests for init_db, get_state, update_state, concurrent read/write, WAL mode verification",
         "Tests pass"
       ],
       "priority": 1,
-      "passes": true
+      "passes": false
     },
     {
       "id": "US-002",
-      "title": "Add 429 fallback to alternative Gemini model",
-      "description": "When _run_vertex_proxy() gets 429 RESOURCE_EXHAUSTED and the retry also fails, try a fallback model (gemini-2.5-flash-lite) before giving up. This reduces the chance of returning raw unpunctuated text to the user.",
+      "title": "Migrate CLI state operations from files to SQLite",
+      "description": "Replace file-based state in start_recording(), stop_recording(), toggle_recording() with SQLite calls. Remove PID_FILE writes/reads, PROCESSING_FILE writes/reads, AUDIO_PATH_FILE writes/reads. Replace is_recording() to read from DB instead of PID file check.",
       "acceptanceCriteria": [
-        "_run_vertex_proxy() accepts optional fallback_model parameter (default None)",
-        "When retry with same model fails on 429: if fallback_model is set, modify stdin_data JSON to use fallback_model and try once more",
-        "Fallback attempt has same timeout as original",
-        "Log the fallback attempt: '[TRACE] vertex_proxy fallback to {model}: Xs'",
-        "process_with_vertex_ai() passes fallback_model from config.get('fallback_model', None)",
-        "process_with_gemini_merge() passes fallback_model from config.get('fallback_model', None)",
-        "gemini-fix and gemini-merge presets in post_processor_presets.py get new config field: fallback_model='gemini-2.5-flash-lite'",
-        "Unit test: _run_vertex_proxy tries fallback model after 429 retry failure",
-        "Unit test: _run_vertex_proxy does NOT try fallback when fallback_model is None",
-        "Unit test: _run_vertex_proxy does NOT try fallback on non-429 errors",
-        "Unit test: fallback success returns the fallback result",
-        "Unit test: fallback failure returns the original failed result",
-        "Unit test: verify gemini-fix and gemini-merge presets have fallback_model field",
-        "Integration test: mock subprocess to simulate 429 → retry 429 → fallback success flow",
-        "Existing tests pass unchanged",
-        "E2E test: run voice-e2e-test skill (short 8s audio) to verify normal path unaffected",
+        "start_recording(): writes status='recording', recording_pid=PID, recording_path=path to DB instead of PID_FILE + AUDIO_PATH_FILE",
+        "stop_recording(): writes status='processing' to DB instead of PROCESSING_FILE; reads recording_path from DB; writes status='idle' at end instead of deleting PROCESSING_FILE",
+        "toggle_recording(): checks DB status instead of PROCESSING_FILE existence; checks updated_at for 120s timeout",
+        "is_recording(): reads DB status=='recording' AND verifies recording_pid is alive (os.kill(pid,0))",
+        "Remove IPC commands: recording_start, recording_stop, set_idle — no longer needed for status",
+        "Keep IPC commands: transcribe, ping, get_model, set_post_processor, stop (still needed for data operations)",
+        "PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE constants kept but unused (backward compat cleanup in separate story)",
+        "Unit tests for each migrated function",
+        "Integration tests for toggle → start → stop → idle state transitions via DB",
         "Tests pass"
       ],
       "priority": 2,
-      "passes": true
+      "passes": false
+    },
+    {
+      "id": "US-003",
+      "title": "Daemon polls SQLite for icon status updates",
+      "description": "Add _sync_status_from_db() to ASRDaemon that reads status from DB and calls set_status() if changed. Called every second in socket_server() timeout loop. Also write daemon_pid to DB on startup and clear on shutdown.",
+      "acceptanceCriteria": [
+        "ASRDaemon._sync_status_from_db(): reads status from DB, compares with self._current_db_status, calls set_status() only if changed",
+        "self._current_db_status initialized to 'idle' in __init__",
+        "socket_server() calls _sync_status_from_db() on every socket.timeout (every 1 second)",
+        "Daemon run(): writes daemon_pid to DB on startup after lock acquired",
+        "Daemon run(): clears daemon_pid in DB on shutdown (in finally block)",
+        "is_daemon_running(): reads daemon_pid from DB, verifies process alive, cleans up if dead",
+        "Post-processor changes: daemon writes post_processor to DB in load_post_processor() instead of _persist_post_processor_id()",
+        "Daemon startup: reads post_processor from DB instead of POST_PROCESSOR_STATE_FILE",
+        "Unit tests for _sync_status_from_db with mock DB",
+        "Unit tests for daemon_pid lifecycle (write on start, clear on stop)",
+        "Integration test: write status to DB from external process, verify daemon picks it up",
+        "Tests pass"
+      ],
+      "priority": 3,
+      "passes": false
+    },
+    {
+      "id": "US-004",
+      "title": "Update CLI status command and cleanup legacy files",
+      "description": "Update voice-input status to read from SQLite. Remove legacy file constants and functions that are no longer used. Ensure backward compatibility during transition.",
+      "acceptanceCriteria": [
+        "show_status(): reads status, daemon_pid, post_processor from DB instead of is_recording() + send_to_daemon()",
+        "Remove _persist_post_processor_id() and _restore_post_processor_id() — replaced by DB",
+        "Remove POST_PROCESSOR_STATE_FILE constant and file operations",
+        "Remove is_process_running() helper if no longer used",
+        "Keep daemon.lock and flock mechanism (not suitable for DB replacement)",
+        "Keep daemon.sock (IPC still needed for transcribe command)",
+        "Delete legacy state files on first DB init: PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE, POST_PROCESSOR_STATE_FILE (one-time migration cleanup)",
+        "Unit tests for updated show_status()",
+        "Unit tests for legacy file cleanup on first init",
+        "E2E test: run voice-e2e-test skill (short 8s audio) to verify full pipeline works",
+        "E2E test: run test_e2e_kitty.py --duration 35 (long audio)",
+        "Tests pass"
+      ],
+      "priority": 4,
+      "passes": false
     }
   ]
 }
