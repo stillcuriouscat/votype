@@ -31,6 +31,7 @@
       "description": "Replace file-based state in start_recording(), stop_recording(), toggle_recording() with SQLite calls. Remove PID_FILE writes/reads, PROCESSING_FILE writes/reads, AUDIO_PATH_FILE writes/reads. Replace is_recording() to read from DB instead of PID file check.",
       "acceptanceCriteria": [
         "start_recording(): writes status='recording', recording_pid=PID, recording_path=path to DB instead of PID_FILE + AUDIO_PATH_FILE",
+        "CRITIC-R2-C1: stop_recording() must read recording_pid AND recording_path from DB via single get_state() call BEFORE the kill sequence — PID_FILE is no longer written, so PID_FILE.read_text() at line 339 will crash. Replace both PID_FILE.read_text (L339) and AUDIO_PATH_FILE.read_text (L353) with one get_state() at top",
         "stop_recording(): writes status='processing' to DB instead of PROCESSING_FILE; reads recording_path from DB; writes status='idle' at end instead of deleting PROCESSING_FILE",
         "toggle_recording(): checks DB status instead of PROCESSING_FILE existence; checks updated_at for 120s timeout",
         "is_recording(): reads DB status=='recording' AND verifies recording_pid is alive (os.kill(pid,0))",
@@ -76,7 +77,7 @@
         "Remove is_process_running() helper if no longer used",
         "Keep daemon.lock and flock mechanism (not suitable for DB replacement)",
         "Keep daemon.sock (IPC still needed for transcribe command)",
-        "Delete legacy state files on first DB init: PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE (NOT POST_PROCESSOR_STATE_FILE — already migrated in US-001)",
+        "CRITIC-R2-M1: Legacy file cleanup must be in voice_input.py ensure_config_dir() (NOT in state_db.py) — state_db.py cannot import voice_input constants due to circular import. ensure_config_dir() calls init_db() then deletes PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE if they exist",
         "CRITIC-R1-M2: Update or replace ALL existing tests that reference removed functions: rewrite test_post_processor_persistence.py to test DB-based persistence, update TestIsProcessRunning/TestIsRecording in test_unit.py to test new DB-based implementations, update test_race.py and test_e2e.py references to is_process_running()",
         "Unit tests for updated show_status()",
         "Unit tests for legacy file cleanup on first init",
