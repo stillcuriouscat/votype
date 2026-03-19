@@ -108,50 +108,6 @@ class TestGetIconsDir:
 
 # ============ 2. Process Status Check Functions ============
 
-class TestIsProcessRunning:
-    """Test is_process_running function."""
-
-    def test_returns_false_when_no_pid_file(self, tmp_path):
-        """Should return False when PID file does not exist."""
-        pid_file = tmp_path / "nonexistent.pid"
-        assert voice_input.is_process_running(pid_file) is False
-
-    def test_returns_false_for_invalid_pid_content(self, tmp_path):
-        """Should return False and delete file when PID file content is invalid."""
-        pid_file = tmp_path / "invalid.pid"
-        pid_file.write_text("not_a_number")
-
-        result = voice_input.is_process_running(pid_file)
-
-        assert result is False
-        assert not pid_file.exists()  # File should be deleted
-
-    def test_returns_false_for_dead_process(self, tmp_path, dead_process_pid):
-        """Should return False and clean up file when process is dead but PID file exists."""
-        # In some restricted environments (e.g. Docker sandbox), dead processes may not be reliably detected
-        # because os.kill raises PermissionError instead of ProcessLookupError
-        if dead_process_pid == 999999999:
-            pytest.skip("Could not find a reliably dead PID in this environment")
-
-        pid_file = tmp_path / "dead.pid"
-        pid_file.write_text(str(dead_process_pid))
-
-        result = voice_input.is_process_running(pid_file)
-
-        assert result is False
-        assert not pid_file.exists()  # File should be cleaned up
-
-    def test_returns_true_for_alive_process(self, tmp_path, fake_process):
-        """Should return True when process is alive."""
-        pid_file = tmp_path / "alive.pid"
-        pid_file.write_text(str(fake_process))
-
-        result = voice_input.is_process_running(pid_file)
-
-        assert result is True
-        assert pid_file.exists()  # File should remain
-
-
 class TestIsRecording:
     """Test is_recording function — now DB-based."""
 
@@ -525,9 +481,10 @@ class TestModelLoader:
 
     def test_model_presets_have_framework(self):
         """All model presets should have a framework field."""
+        valid_frameworks = {"funasr", "transformers", "fireredasr", "faster-whisper"}
         for model_id, preset in voice_input.MODEL_PRESETS.items():
             assert "framework" in preset
-            assert preset["framework"] in ["funasr", "transformers", "fireredasr"]
+            assert preset["framework"] in valid_frameworks
 
 
 class TestHotwords:

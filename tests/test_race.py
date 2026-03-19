@@ -450,20 +450,27 @@ class TestBoundaryConditions:
     def test_daemon_start_during_cleanup(self, isolated_environment):
         """
         Attempt to start new daemon during daemon cleanup process.
+        Dead daemon_pid in DB should be cleaned up by is_daemon_running.
         """
-        pid_file = isolated_environment['daemon_pid_file']
-        socket_path = isolated_environment['socket_path']
+        import state_db as _state_db
 
-        # Create leftover files (simulate state during cleanup)
-        pid_file.write_text("99999")  # A non-existent PID
+        socket_path = isolated_environment['socket_path']
         socket_path.touch()
 
-        # is_process_running should detect dead process and clean up
+        # Write a dead PID to DB
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            daemon_pid=99999,
+        )
+
         with patch('voice_input.os.kill', side_effect=ProcessLookupError):
-            result = voice_input.is_process_running(pid_file)
+            with patch('voice_input._is_daemon_lock_held', return_value=False):
+                result = voice_input.is_daemon_running()
 
         assert result is False
-        assert not pid_file.exists()
+        # DB should be cleaned up
+        state = _state_db.get_state(isolated_environment["state_db_path"])
+        assert state["daemon_pid"] is None
 
     def test_toggle_rapid_fire(self, isolated_environment, mock_subprocess, mock_notify):
         """

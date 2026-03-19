@@ -71,16 +71,22 @@ _RECORDER = "pw-record" if shutil.which("pw-record") else "arecord"
 
 # Current model state file
 MODEL_STATE_FILE = CONFIG_DIR / "current_model.txt"
-POST_PROCESSOR_STATE_FILE = CONFIG_DIR / "current_post_processor.txt"
 
 # SQLite state database path (mirrors state_db.DEFAULT_DB_PATH)
 STATE_DB_PATH = Path.home() / ".config" / "voice-input" / "state.db"
 
 
 def ensure_config_dir():
-    """Ensure config directory exists and initialize state DB."""
+    """Ensure config directory exists, initialize state DB, and clean up legacy files."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     init_db(STATE_DB_PATH)
+
+    # Clean up legacy state files — replaced by SQLite DB
+    for legacy_file in (PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE):
+        if legacy_file.exists():
+            legacy_file.unlink(missing_ok=True)
+            _log("CLEANUP", f"removed legacy file: {legacy_file.name}")
+
     _log("INIT", f"config dir ensured: {CONFIG_DIR}")
 
 
@@ -142,20 +148,6 @@ def notify(title, message, urgency="normal"):
         )
     except FileNotFoundError:
         pass
-
-
-def is_process_running(pid_file):
-    """Check whether the process referenced by a PID file is running."""
-    if not pid_file.exists():
-        return False
-    try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, ValueError):
-        pid_file.unlink(missing_ok=True)
-        _log("PID", f"cleaned stale PID file: {pid_file.name}")
-        return False
 
 
 def is_recording():
@@ -675,26 +667,6 @@ class ASRDaemon:
         self._secondary_model = None  # Secondary ASR model (faster-whisper for dual fusion)
         self._last_secondary_text = None  # Last secondary ASR transcription result
         self._current_db_status = "idle"  # Tracks last DB status for polling delta
-
-    @staticmethod
-    def _restore_post_processor_id():
-        """Restore post-processor ID from state file, or return default."""
-        try:
-            saved = POST_PROCESSOR_STATE_FILE.read_text().strip()
-            if saved in POST_PROCESSOR_PRESETS:
-                return saved
-        except (FileNotFoundError, OSError):
-            pass
-        return DEFAULT_POST_PROCESSOR
-
-    @staticmethod
-    def _persist_post_processor_id(preset_id):
-        """Save post-processor ID to state file for daemon restart recovery."""
-        try:
-            POST_PROCESSOR_STATE_FILE.write_text(preset_id)
-            _log("CONFIG", f"post-processor state saved: {preset_id}")
-        except OSError:
-            pass
 
     def setup_indicator(self):
         """Set up the system tray icon."""
@@ -1396,25 +1368,30 @@ def stop_daemon():
 
 
 def show_status():
-    """Show status"""
-    print(f"Recording: {'Yes' if is_recording() else 'No'}")
-    print(f"Daemon: {'Running' if is_daemon_running() else 'Not running'}")
+    """Show status — reads recording state and post-processor from DB."""
+    state = get_state(STATE_DB_PATH)
+    recording = state["status"] == "recording"
+    daemon_running = is_daemon_running()
 
-    if is_daemon_running():
+    print(f"Recording: {'Yes' if recording else 'No'}")
+    print(f"Daemon: {'Running' if daemon_running else 'Not running'}")
+
+    if daemon_running:
         response = send_to_daemon("get_model")
         if response and "model" in response:
             print(f"Model: {response.get('name', 'Unknown')} ({response.get('model')})")
             print(f"  {response.get('description', '')}")
         else:
             print("Daemon: Not responsive")
-        pp_response = send_to_daemon("get_post_processor")
-        if pp_response and "post_processor" in pp_response:
-            print(f"Post-processor: {pp_response.get('name', 'Unknown')} ({pp_response.get('post_processor')})")
     else:
-        # Show current model from config file
         model_id = get_current_model()
         preset = MODEL_PRESETS.get(model_id, {})
         print(f"Configured Model: {preset.get('name', 'Unknown')} ({model_id})")
+
+    # Post-processor from DB (works whether daemon is running or not)
+    pp_id = state.get("post_processor", DEFAULT_POST_PROCESSOR)
+    pp_preset = POST_PROCESSOR_PRESETS.get(pp_id, {})
+    print(f"Post-processor: {pp_preset.get('name', 'Unknown')} ({pp_id})")
 
 
 def set_post_processor():

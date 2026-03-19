@@ -45,34 +45,26 @@ class TestReadmeSSHControlMaster:
 
 
 class TestStatusShowsPostProcessor:
-    """voice-input status shows current post-processor name."""
+    """voice-input status shows current post-processor name from DB."""
 
-    def test_status_prints_post_processor_when_daemon_running(self):
+    def test_status_prints_post_processor_when_daemon_running(self, tmp_path, monkeypatch):
+        import state_db as _state_db
         from voice_input import show_status
+
+        db_path = tmp_path / "state.db"
+        monkeypatch.setattr("voice_input.STATE_DB_PATH", db_path)
+        monkeypatch.setattr("state_db.DEFAULT_DB_PATH", db_path)
+        _state_db.init_db(db_path)
+        _state_db.update_state(db_path, post_processor="haiku-fix")
 
         mock_model_response = {
             "model": "firered-asr",
             "name": "FireRed ASR",
             "description": "Chinese SOTA",
         }
-        mock_pp_response = {
-            "post_processor": "haiku-fix",
-            "name": "Haiku Fix (SSH)",
-            "description": "ASR error correction via Claude Haiku",
-        }
 
-        with patch("voice_input.is_recording", return_value=False), \
-             patch("voice_input.is_daemon_running", return_value=True), \
-             patch("voice_input.send_to_daemon") as mock_send:
-
-            def send_side_effect(cmd, *args, **kwargs):
-                if cmd == "get_model":
-                    return mock_model_response
-                elif cmd == "get_post_processor":
-                    return mock_pp_response
-                return None
-
-            mock_send.side_effect = send_side_effect
+        with patch("voice_input.is_daemon_running", return_value=True), \
+             patch("voice_input.send_to_daemon", return_value=mock_model_response):
 
             captured = StringIO()
             with patch("sys.stdout", captured):

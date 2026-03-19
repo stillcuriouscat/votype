@@ -123,16 +123,25 @@ class TestExceptionRecovery:
         assert running is False
         assert not daemon_pid_file.exists()
 
-    def test_stale_pid_file_cleanup(self, isolated_environment):
-        """Stale PID file should be cleaned up correctly."""
-        pid_file = isolated_environment['pid_file']
-        pid_file.write_text("88888")  # Non-existent PID
+    def test_stale_db_recording_cleanup(self, isolated_environment):
+        """Stale recording status in DB should be cleaned up by is_recording()."""
+        import state_db as _state_db
+
+        # Set recording with a dead PID in DB
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=99999,
+            recording_path="/tmp/test.wav",
+        )
 
         with patch('voice_input.os.kill', side_effect=ProcessLookupError):
-            result = voice_input.is_process_running(pid_file)
+            result = voice_input.is_recording()
 
         assert result is False
-        assert not pid_file.exists()
+        # DB should be cleaned up to idle
+        state = _state_db.get_state(isolated_environment["state_db_path"])
+        assert state["status"] == "idle"
 
     def test_stale_socket_file_cleanup(self, isolated_environment, mock_asr_model, mock_gtk):
         """Stale socket file should be cleaned up correctly."""
@@ -417,30 +426,25 @@ class TestModelManagementE2E:
 
     def test_status_shows_model_info_daemon_not_running(self, isolated_environment, capsys):
         """Single-model architecture: status command should show default model when daemon is not running."""
-        state_file = isolated_environment['config_dir'] / "current_model.txt"
-        state_file.write_text("sensevoice")
-
         with patch('sys.argv', ['voice_input', 'status']):
-            with patch('voice_input.is_recording', return_value=False):
-                with patch('voice_input.is_daemon_running', return_value=False):
-                    voice_input.main()
+            with patch('voice_input.is_daemon_running', return_value=False):
+                voice_input.main()
 
         captured = capsys.readouterr()
-        # Single-model architecture: should display default model fun-asr-nano
-        assert "Fun-ASR-Nano" in captured.out or "fun-asr-nano" in captured.out
+        # Single-model architecture: should display default model (sensevoice)
+        assert "SenseVoice" in captured.out or "sensevoice" in captured.out
 
     def test_status_shows_running_daemon_model(self, isolated_environment, capsys):
         """The status command should show the model of the running daemon."""
         with patch('sys.argv', ['voice_input', 'status']):
-            with patch('voice_input.is_recording', return_value=False):
-                with patch('voice_input.is_daemon_running', return_value=True):
-                    with patch('voice_input.send_to_daemon') as mock_send:
-                        mock_send.return_value = {
-                            "model": "sensevoice",
-                            "name": "SenseVoice",
-                            "description": "Chinese-English mixed, multilingual support"
-                        }
-                        voice_input.main()
+            with patch('voice_input.is_daemon_running', return_value=True):
+                with patch('voice_input.send_to_daemon') as mock_send:
+                    mock_send.return_value = {
+                        "model": "sensevoice",
+                        "name": "SenseVoice",
+                        "description": "Chinese-English mixed, multilingual support"
+                    }
+                    voice_input.main()
 
         captured = capsys.readouterr()
         assert "SenseVoice" in captured.out or "sensevoice" in captured.out

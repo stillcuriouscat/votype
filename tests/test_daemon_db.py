@@ -398,7 +398,7 @@ class TestLoadPostProcessorDb:
         assert state["post_processor"] == "gemini-fix"
 
     def test_does_not_write_to_file(self, db_env):
-        """load_post_processor() does NOT write to POST_PROCESSOR_STATE_FILE."""
+        """load_post_processor() does NOT write to legacy post-processor state file."""
         daemon = _make_daemon()
         pp_file = db_env["config_dir"] / "current_post_processor.txt"
 
