@@ -203,10 +203,6 @@ def is_daemon_running():
     Tries DB daemon_pid first, falls back to flock + PID file for
     backward compatibility during transition.
     """
-    # Fast path: check flock (covers startup race before PID/DB is written)
-    if _is_daemon_lock_held():
-        return True
-
     # Try DB first: daemon writes daemon_pid on startup
     state = get_state(STATE_DB_PATH)
     db_pid = state.get("daemon_pid")
@@ -216,7 +212,11 @@ def is_daemon_running():
             # Verify this is actually our daemon
             cmdline_path = Path(f"/proc/{db_pid}/cmdline")
             if cmdline_path.exists():
-                cmdline = cmdline_path.read_text()
+                try:
+                    with open(cmdline_path, 'r') as f:
+                        cmdline = f.read()
+                except OSError:
+                    cmdline = ""
                 if "voice_input" not in cmdline and "voice-input" not in cmdline:
                     update_state(STATE_DB_PATH, daemon_pid=None)
                     _cleanup_daemon_files()
@@ -228,20 +228,29 @@ def is_daemon_running():
             _cleanup_daemon_files()
             return False
 
+    # Fallback: check flock (covers startup race before PID/DB is written)
+    if _is_daemon_lock_held():
+        return True
+
     # Fallback: PID file (backward compat — daemon may not have written to DB yet)
     if not DAEMON_PID_FILE.exists():
         return False
     try:
-        pid = int(DAEMON_PID_FILE.read_text().strip())
+        with open(DAEMON_PID_FILE, 'r') as f:
+            pid = int(f.read().strip())
         os.kill(pid, 0)
         cmdline_path = Path(f"/proc/{pid}/cmdline")
         if cmdline_path.exists():
-            cmdline = cmdline_path.read_text()
+            try:
+                with open(cmdline_path, 'r') as f:
+                    cmdline = f.read()
+            except OSError:
+                cmdline = ""
             if "voice_input" not in cmdline and "voice-input" not in cmdline:
                 _cleanup_daemon_files()
                 return False
         return True
-    except (ProcessLookupError, ValueError):
+    except (ProcessLookupError, ValueError, OSError):
         _cleanup_daemon_files()
         return False
 
@@ -304,8 +313,16 @@ def start_recording():
     audio_file = CONFIG_DIR / f"recording_{ts}.wav"
 
     # Use Popen to start recording (better process management)
+    # Check recorder binary at runtime so monkeypatching shutil.which works in tests
+    recorder = "pw-record" if shutil.which("pw-record") else ("arecord" if shutil.which("arecord") else None)
+    if recorder is None:
+        _log("ERROR", "start_recording failed: no recorder binary found (pw-record or arecord)")
+        update_state(STATE_DB_PATH, status="idle", recording_pid=None, recording_path=None)
+        notify("❌ Voice Input", "Failed to start recording: no recorder binary found", "critical")
+        return
+
     try:
-        if _RECORDER == "pw-record":
+        if recorder == "pw-record":
             cmd = [
                 "pw-record",
                 f"--format=s16",
@@ -328,11 +345,11 @@ def start_recording():
             stderr=subprocess.DEVNULL,
             start_new_session=True  # Create new session to decouple from parent process
         )
-        _log("PROC", f"recorder spawned: {_RECORDER} (PID {proc.pid})")
+        _log("PROC", f"recorder spawned: {recorder} (PID {proc.pid})")
 
         update_state(STATE_DB_PATH, status="recording", recording_pid=proc.pid, recording_path=str(audio_file))
         _log("PROC", f"recording state saved: PID={proc.pid}, path={audio_file.name}")
-        print(f"Recording started (PID: {proc.pid}, recorder: {_RECORDER}, file: {audio_file.name})")
+        print(f"Recording started (PID: {proc.pid}, recorder: {recorder}, file: {audio_file.name})")
     except (FileNotFoundError, OSError) as e:
         _log("ERROR", f"start_recording failed: {e}")
         update_state(STATE_DB_PATH, status="idle", recording_pid=None, recording_path=None)
@@ -600,7 +617,7 @@ def toggle_recording():
 
         venv_python, script_path = get_daemon_paths()
         cmd = f'nohup "{venv_python}" "{script_path}" _daemon > /tmp/voice-input-daemon.log 2>&1 &'
-        subprocess.run(["bash", "-c", cmd])
+        subprocess.Popen(["bash", "-c", cmd])
 
         # Wait for daemon to be ready (up to 30 seconds)
         for _ in range(30):
@@ -626,6 +643,7 @@ STATUS_CONFIG = {
     "idle": ("mic-idle", "Idle", "Status: Idle"),
     "recording": ("mic-recording", "Recording", "Status: 🔴 Recording..."),
     "processing": ("mic-processing", "Processing", "Status: ⏳ Processing..."),
+    "polishing": ("mic-polishing", "Polishing", "Status: 🔵 Polishing..."),
 }
 
 def get_icons_dir():
@@ -1017,6 +1035,10 @@ class ASRDaemon:
             glossary_ctx = glossary_context(self._vocab)
             before_polish = result
 
+            # Set polishing status (blue icon) during LLM call
+            from state_db import update_state
+            update_state(status="polishing")
+
             if self.post_processor_framework == "vertex-ai-merge":
                 # Dual ASR fusion: primary processed text + raw secondary text → Gemini merge
                 secondary = getattr(self, '_last_secondary_text', None)
@@ -1028,6 +1050,9 @@ class ASRDaemon:
                     "vertex-ai": process_with_vertex_ai,
                 }[self.post_processor_framework]
                 result = process_fn(result, config, glossary_ctx)
+
+            # Restore processing status (orange icon) after LLM call
+            update_state(status="processing")
 
             # Vocab accumulation (only if LLM changed something)
             if before_polish != result:
@@ -1226,11 +1251,11 @@ class ASRDaemon:
             else:
                 response = {"error": f"Unknown command: {command}"}
 
-            client.send(json.dumps(response).encode())
+            client.sendall(json.dumps(response).encode())
         except Exception as e:
             _log("ERROR", f"socket handler error: {e}")
             try:
-                client.send(json.dumps({"error": str(e)}).encode())
+                client.sendall(json.dumps({"error": str(e)}).encode())
             except:
                 pass
         finally:
