@@ -2,6 +2,26 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-19 - US-002 (Migrate CLI state operations to SQLite)
+- Migrated is_recording(), start_recording(), stop_recording(), toggle_recording() from file-based state to SQLite DB
+- is_recording: reads DB status + verifies recording_pid liveness via os.kill(pid, 0)
+- start_recording: writes status/recording_pid/recording_path to DB (removed PID_FILE, AUDIO_PATH_FILE, IPC recording_start)
+- stop_recording: reads recording_pid/recording_path from DB before kill (CRITIC-R2-C1), DB status transitions: recording→processing→idle
+- toggle_recording: checks DB status instead of PROCESSING_FILE, parses updated_at ISO8601 for 120s timeout
+- handle_client: removed status_commands dict (recording_start, recording_stop, set_idle now return "Unknown command")
+- ensure_config_dir: added init_db(STATE_DB_PATH) call
+- Created tests/test_cli_state.py with 28 tests (is_recording: 5, start_recording: 5, stop_recording: 7, toggle_recording: 5, handle_client: 5, integration: 1), all passing
+- Updated tests/conftest.py: isolated_environment initializes state DB, mock_socket_server removed status commands, reset fixture restores state_db paths
+- Updated 6 tests in test_integration.py, 6 tests in test_race.py, 4 tests in test_unit.py for DB-based state
+- Files changed: voice_input.py, tests/conftest.py, tests/test_cli_state.py (new), tests/test_integration.py, tests/test_race.py, tests/test_unit.py
+- **Learnings for future iterations:**
+  - git stash + stash pop can silently lose tracked file changes if conflicts exist — always verify git status after stash pop
+  - Tests that patch DAEMON_PID_FILE must also patch DAEMON_LOCK_FILE for isolation (real daemon lock can leak into tests)
+  - is_daemon_running() checks /proc/{pid}/cmdline for "voice_input" — pytest process PID won't match, so tests must mock _is_daemon_lock_held instead
+  - stop_recording reads get_state() once at top, then uses the snapshot for pid/path — DB state may change during processing but we use the pre-read values
+  - 47 pre-existing test failures (same as before: haiku preset, faster-whisper specs, ssh_claude, hallucination guard, model framework)
+---
+
 ## 2026-03-19 - US-001 (SQLite state_db module)
 - Created state_db.py with init_db(), get_state(), update_state() functions
 - SQLite DB with daemon_state table (id=1), WAL mode, BEGIN IMMEDIATE writes
@@ -55,6 +75,13 @@ Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
 ## Codebase Patterns
+- state_db functions (init_db, get_state, update_state) are imported at module level in voice_input.py
+- STATE_DB_PATH constant in voice_input.py mirrors state_db.DEFAULT_DB_PATH — tests must patch BOTH
+- ensure_config_dir() now calls init_db(STATE_DB_PATH) — any function calling ensure_config_dir() auto-initializes DB
+- CLI state flow: update_state(status="recording") → update_state(status="processing") → update_state(status="idle")
+- stop_recording reads get_state() snapshot BEFORE kill sequence — protects against concurrent state changes
+- Tests using isolated_environment get automatic state DB initialization via conftest.py
+- Tests that check is_daemon_running must also isolate DAEMON_LOCK_FILE (real daemon lock leaks otherwise)
 - ModelLoader: each framework has a static `load_<framework>_model()` method + `elif` in `load_model()` dispatch
 - ModelInference: each framework has a static `transcribe_<framework>()` method + `elif` in `transcribe()` dispatch
 - `load_model()` returns `(model, framework, extra_data)` tuple — extra_data is None when no extra state needed
