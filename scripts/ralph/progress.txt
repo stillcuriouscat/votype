@@ -2,6 +2,29 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-19 - US-004 (Update CLI status command and cleanup legacy files)
+- show_status() rewritten to read status/post_processor from SQLite DB instead of is_recording() + send_to_daemon IPC
+- Removed _persist_post_processor_id(), _restore_post_processor_id() static methods (replaced by DB writes)
+- Removed POST_PROCESSOR_STATE_FILE constant (replaced by DB)
+- Removed is_process_running() helper function (no longer used — is_recording/is_daemon_running use DB)
+- ensure_config_dir() now deletes legacy PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE on startup (CRITIC-R2-M1)
+- Rewrote test_post_processor_persistence.py: 8 tests for DB-based persistence (was 9 for file-based)
+- Updated test_unit.py: removed TestIsProcessRunning (4 tests), updated TestModelLoader frameworks set
+- Updated test_e2e.py: replaced is_process_running test with DB-based stale recording cleanup, updated status tests
+- Updated test_race.py: replaced is_process_running test with DB-based daemon PID cleanup
+- Updated test_ssh_controlmaster_docs.py: show_status post-processor now reads from DB, not IPC
+- Updated test_daemon_db.py: fixed docstring referencing removed constant
+- Created test_show_status.py with 9 tests (DB reads, no IPC for PP, daemon responsive/not responsive)
+- Created test_legacy_cleanup.py with 6 tests (each legacy file, all files, absent files, DB init)
+- Files changed: voice_input.py, tests/test_show_status.py (new), tests/test_legacy_cleanup.py (new), tests/test_post_processor_persistence.py, tests/test_unit.py, tests/test_e2e.py, tests/test_race.py, tests/test_ssh_controlmaster_docs.py, tests/test_daemon_db.py
+- Test results: 233 passed, 2 pre-existing failures (daemon lock isolation, help exit code), 3 skipped
+- **Learnings for future iterations:**
+  - show_status() should read ALL state from DB — never rely on IPC for status that DB already tracks
+  - Removing is_process_running() is safe because is_recording() and is_daemon_running() both use DB now; only tests called it directly
+  - DAEMON_LOCK_FILE is not patched in isolated_environment fixture — tests that call is_daemon_running() may see the real daemon lock
+  - test_main_without_arguments expects sys.exit(1) but help text triggers sys.exit(0) — pre-existing mismatch
+---
+
 ## 2026-03-19 - US-003 (Daemon polls SQLite for icon status updates)
 - Added _sync_status_from_db() to ASRDaemon: polls DB for status changes, calls set_status() only if changed
 - Initialized _current_db_status='idle' in __init__ for delta tracking
@@ -93,6 +116,11 @@ Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
 ## Codebase Patterns
+- show_status() reads status/post_processor from DB — no IPC for state that DB tracks
+- ensure_config_dir() deletes legacy files (PID, processing flag, audio path) on every startup
+- is_process_running() removed — all callers now use DB-based state (is_recording, is_daemon_running)
+- _persist/_restore_post_processor_id() removed — DB is sole persistence for post_processor
+- POST_PROCESSOR_STATE_FILE removed — legacy migration handled by init_db() in state_db.py
 - state_db functions (init_db, get_state, update_state) are imported at module level in voice_input.py
 - STATE_DB_PATH constant in voice_input.py mirrors state_db.DEFAULT_DB_PATH — tests must patch BOTH
 - ensure_config_dir() now calls init_db(STATE_DB_PATH) — any function calling ensure_config_dir() auto-initializes DB
