@@ -2,6 +2,22 @@
 Started: Thu 12 Mar 2026 12:00:18 AM CST
 ---
 
+## 2026-03-19 - US-001 (SQLite state_db module)
+- Created state_db.py with init_db(), get_state(), update_state() functions
+- SQLite DB with daemon_state table (id=1), WAL mode, BEGIN IMMEDIATE writes
+- DEFAULT_DB_PATH defined directly (no circular import with voice_input.py)
+- Legacy current_post_processor.txt migration in init_db()
+- get_state() self-initializes if table missing, returns _SAFE_DEFAULT on errors
+- update_state() validates column names (SQL injection prevention via whitelist)
+- Created tests/test_state_db.py with 38 tests (init: 10, migration: 4, get: 7, update: 12, concurrency: 3, WAL: 2), all passing
+- Files changed: state_db.py (new), tests/test_state_db.py (new)
+- **Learnings for future iterations:**
+  - state_db.py must NOT import from voice_input.py — circular import risk (CRITIC-R1-M1)
+  - get_state() returns dict (not sqlite3.Row) — callers get standard dict access
+  - 45 pre-existing test failures unrelated to this change (haiku preset, faster-whisper specs, ssh_claude, hallucination guard)
+  - state_db.py needs symlink to install dir for daemon import: `ln -sf ~/code/voice_input/state_db.py ~/.local/share/voice-input/state_db.py`
+---
+
 ## 2026-03-18 - US-003 (Global Endpoint)
 - Changed vertex_region from 'us-central1' to 'global' in gemini-fix and gemini-merge presets
 - Updated vertex_proxy.py defaults (location, region, help text, docstring)
