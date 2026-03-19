@@ -137,24 +137,25 @@ class TestDaemonSocketCommunication:
             response = json.loads(mock_client.send.call_args[0][0].decode())
             assert "text" in response
 
-    def test_daemon_handles_status_commands(self, isolated_environment, mock_asr_model, mock_gtk):
-        """Daemon should handle status switch commands."""
+    def test_daemon_rejects_removed_status_commands(self, isolated_environment, mock_asr_model, mock_gtk):
+        """Daemon should return error for removed status IPC commands."""
         daemon = voice_input.ASRDaemon()
         daemon.model = mock_asr_model['model_instance']
         daemon.running = True
         daemon.indicator = mock_gtk['indicator']
         daemon.status_item = MagicMock()
 
-        status_commands = ["recording_start", "recording_stop", "set_idle"]
+        removed_commands = ["recording_start", "recording_stop", "set_idle"]
 
-        for cmd in status_commands:
+        for cmd in removed_commands:
             mock_client = MagicMock()
             mock_client.recv.return_value = json.dumps({"command": cmd}).encode()
 
             daemon.handle_client(mock_client)
 
             response = json.loads(mock_client.send.call_args[0][0].decode())
-            assert response == {"status": "ok"}
+            assert "error" in response
+            assert "Unknown command" in response["error"]
 
     def test_daemon_handles_unknown_command(self, isolated_environment, mock_asr_model, mock_gtk):
         """Daemon should handle unknown commands."""
@@ -194,8 +195,10 @@ class TestRecordingFlow:
         call_args = str(mock_subprocess.Popen.call_args)
         assert "pw-record" in call_args or "arecord" in call_args
 
-    def test_start_recording_notifies_daemon(self, isolated_environment, mock_subprocess, mock_notify):
-        """Starting recording should notify daemon to update status."""
+    def test_start_recording_writes_db_state(self, isolated_environment, mock_subprocess, mock_notify):
+        """Starting recording should write status to DB instead of IPC."""
+        import state_db as _state_db
+
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         mock_subprocess.Popen.return_value = mock_proc
@@ -206,8 +209,14 @@ class TestRecordingFlow:
                     mock_send.return_value = {"status": "ok"}
                     voice_input.start_recording()
 
-                    # Should send recording_start command
-                    mock_send.assert_called_with("recording_start")
+                    # Should NOT send recording_start IPC
+                    for c in mock_send.call_args_list:
+                        assert c[0][0] != "recording_start"
+
+        # Verify DB state was written
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "recording"
+        assert s["recording_pid"] == 12345
 
     def test_start_recording_when_already_recording(self, isolated_environment, mock_notify):
         """Should show anomaly notification when already recording."""
@@ -221,12 +230,18 @@ class TestRecordingFlow:
 
     def test_stop_recording_terminates_process(self, isolated_environment, mock_notify):
         """Stopping recording should terminate the arecord process."""
-        pid_file = isolated_environment['pid_file']
-        audio_file = isolated_environment['audio_file']
+        import state_db as _state_db
 
-        # Create PID file and audio file
-        pid_file.write_text("12345")
+        audio_file = isolated_environment['audio_file']
         audio_file.touch()
+
+        # Set up DB state for recording
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=12345,
+            recording_path=str(audio_file),
+        )
 
         with patch('voice_input.is_recording', return_value=True):
             with patch('voice_input.is_daemon_running', return_value=True):
@@ -298,10 +313,16 @@ class TestToggleRecording:
 
     def test_toggle_stops_recording_when_already_recording(self, isolated_environment, mock_notify):
         """Toggle should stop recording when daemon is ready and already recording."""
-        pid_file = isolated_environment['pid_file']
-        audio_file = isolated_environment['audio_file']
-        pid_file.write_text("12345")
-        audio_file.touch()
+        import state_db as _state_db
+
+        # Set up DB state for recording
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=os.getpid(),
+            recording_path=str(isolated_environment['audio_file']),
+        )
+        isolated_environment['audio_file'].touch()
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_recording', return_value=True):
@@ -309,15 +330,19 @@ class TestToggleRecording:
                     with patch('voice_input.send_to_daemon') as mock_send:
                         mock_send.return_value = {"text": "transcription result"}
                         with patch('voice_input.type_text'):
-                            with patch('os.kill'):
+                            with patch('os.kill', side_effect=ProcessLookupError):
                                 with patch('voice_input.time.sleep'):
                                     voice_input.toggle_recording()
 
-                        # Should send recording_stop command
-                        assert any(
-                            call[0][0] == "recording_stop"
-                            for call in mock_send.call_args_list
-                        )
+                        # Should send transcribe but NOT recording_stop or set_idle
+                        cmds = [c[0][0] for c in mock_send.call_args_list]
+                        assert "transcribe" in cmds
+                        assert "recording_stop" not in cmds
+                        assert "set_idle" not in cmds
+
+        # DB should be idle after stop
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "idle"
 
     def test_toggle_waits_for_daemon_ready(self, isolated_environment, mock_subprocess, mock_notify):
         """Should wait for ping success after starting daemon."""
@@ -415,39 +440,50 @@ class TestStateMachine:
     """Test the correctness of state transitions."""
 
     def test_idle_to_recording_transition(self, isolated_environment, mock_subprocess, mock_notify):
-        """Idle -> recording state transition."""
-        mock_subprocess.run.return_value = MagicMock(stdout="12345\n", stderr="")
+        """Idle -> recording state transition via DB."""
+        import state_db as _state_db
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_subprocess.Popen.return_value = mock_proc
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_recording', return_value=False):
                 with patch('voice_input.is_daemon_running', return_value=True):
-                    with patch('voice_input.send_to_daemon') as mock_send:
-                        mock_send.return_value = {"status": "ok"}
-                        voice_input.toggle_recording()
+                    voice_input.toggle_recording()
 
-                        # Should send recording_start (called in start_recording)
-                        mock_send.assert_called_with("recording_start")
+        # Verify DB state transition: idle → recording
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "recording"
+        assert s["recording_pid"] == 12345
 
     def test_recording_to_processing_transition(self, isolated_environment, mock_notify):
-        """Recording -> processing state transition."""
-        pid_file = isolated_environment['pid_file']
+        """Recording -> processing -> idle state transition via DB."""
+        import state_db as _state_db
+
         audio_file = isolated_environment['audio_file']
-        pid_file.write_text("12345")
         audio_file.touch()
+
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=os.getpid(),
+            recording_path=str(audio_file),
+        )
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_recording', return_value=True):
                 with patch('voice_input.is_daemon_running', return_value=True):
-                    with patch('voice_input.send_to_daemon') as mock_send:
-                        mock_send.return_value = {"text": "result"}
+                    with patch('voice_input.send_to_daemon', return_value={"text": "result"}):
                         with patch('voice_input.type_text'):
-                            with patch('os.kill'):
+                            with patch('os.kill', side_effect=ProcessLookupError):
                                 with patch('voice_input.time.sleep'):
                                     voice_input.toggle_recording()
 
-                        # Should send recording_stop (triggers processing state)
-                        calls = [c[0][0] for c in mock_send.call_args_list]
-                        assert "recording_stop" in calls
+        # Verify final DB state: idle (went through processing internally)
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "idle"
+        assert s["recording_pid"] is None
 
 
 # ============ 6. Model Switching Tests ============

@@ -539,16 +539,16 @@ class TestBoundaryConditions:
         assert result2 is not None
 
 
-# ============ 6. Processing Flag Guard Tests ============
+# ============ 6. Processing Guard Tests (DB-based) ============
 
 @pytest.mark.race
 class TestProcessingFlagGuard:
-    """Test that PROCESSING_FILE prevents ghost recordings during ASR/Gemini processing."""
+    """Test that DB status='processing' prevents ghost recordings during ASR/Gemini processing."""
 
     def test_toggle_rejected_during_processing(self, isolated_environment, mock_notify):
-        """Toggle should be rejected when processing flag exists (< 120s old)."""
-        processing_file = isolated_environment['processing_file']
-        processing_file.write_text(str(os.getpid()))
+        """Toggle should be rejected when DB status='processing' (< 120s old)."""
+        import state_db as _state_db
+        _state_db.update_state(isolated_environment["state_db_path"], status="processing")
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_recording', return_value=False) as mock_is_rec:
@@ -566,9 +566,11 @@ class TestProcessingFlagGuard:
         assert "Processing" in call_args[1] or "processing" in call_args[1]
 
     def test_toggle_allowed_after_processing_complete(self, isolated_environment, mock_notify):
-        """Toggle should work normally when no processing flag exists."""
-        processing_file = isolated_environment['processing_file']
-        assert not processing_file.exists()
+        """Toggle should work normally when DB status='idle'."""
+        import state_db as _state_db
+        # Ensure DB is idle (default after init)
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "idle"
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_recording', return_value=False):
@@ -578,14 +580,17 @@ class TestProcessingFlagGuard:
                             voice_input.toggle_recording()
                             mock_start.assert_called_once()
 
-    def test_stale_processing_flag_cleaned_up(self, isolated_environment, mock_notify):
-        """Processing flag older than 120s should be cleaned up and toggle allowed."""
-        processing_file = isolated_environment['processing_file']
-        processing_file.write_text(str(os.getpid()))
+    def test_stale_processing_status_cleaned_up(self, isolated_environment, mock_notify):
+        """Processing status older than 120s should be cleaned up and toggle allowed."""
+        import state_db as _state_db
+        from datetime import datetime, timezone, timedelta
 
-        # Make the file appear old (>120s)
-        old_time = time.time() - 200
-        os.utime(processing_file, (old_time, old_time))
+        old_time = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="processing",
+            updated_at=old_time,
+        )
 
         with patch('voice_input.is_daemon_ready', return_value=True):
             with patch('voice_input.is_daemon_running', return_value=True):
@@ -593,81 +598,88 @@ class TestProcessingFlagGuard:
                     with patch('voice_input.is_recording', return_value=False):
                         with patch('voice_input.start_recording') as mock_start:
                             voice_input.toggle_recording()
-                            # Should clean up stale flag and proceed
+                            # Should clean up stale status and proceed
                             mock_start.assert_called_once()
 
-        # Processing flag should have been removed
-        assert not processing_file.exists()
+    def test_stop_recording_sets_processing_in_db(self, isolated_environment, mock_notify):
+        """stop_recording() should write status='processing' to DB before killing recorder."""
+        import state_db as _state_db
 
-    def test_stop_recording_creates_processing_flag(self, isolated_environment, mock_notify):
-        """stop_recording() should create processing flag before killing recorder."""
-        processing_file = isolated_environment['processing_file']
-        pid_file = isolated_environment['pid_file']
-        pid_file.write_text(str(os.getpid()))
+        audio_file = isolated_environment['config_dir'] / "recording_test.wav"
+        audio_file.write_bytes(b'\x00' * 100)
 
-        flag_created_before_kill = [False]
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=os.getpid(),
+            recording_path=str(audio_file),
+        )
+
+        status_at_kill = [None]
 
         def smart_kill(pid, sig):
             if sig == 0:
-                return  # is_process_running() existence check — process exists
-            # SIGTERM — check flag was created before this point
-            flag_created_before_kill[0] = processing_file.exists()
+                return  # is_recording PID check
+            # SIGTERM — check DB status at kill time
+            status_at_kill[0] = _state_db.get_state(isolated_environment["state_db_path"])["status"]
             raise ProcessLookupError
 
         with patch('voice_input.is_daemon_running', return_value=False):
             with patch('voice_input.os.kill', side_effect=smart_kill):
                 voice_input.stop_recording()
 
-        # Processing flag should have existed BEFORE kill was called
-        assert flag_created_before_kill[0], "PROCESSING_FILE must be created before killing recorder"
-        # Processing flag should be cleaned up at the end
-        assert not processing_file.exists()
+        # DB status should have been 'processing' BEFORE kill was called
+        assert status_at_kill[0] == "processing", "DB status must be 'processing' before killing recorder"
+        # DB status should be 'idle' after stop
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "idle"
 
-    def test_stop_recording_cleans_processing_flag_on_error(self, isolated_environment, mock_notify):
-        """Processing flag should be cleaned up even when transcription fails."""
-        processing_file = isolated_environment['processing_file']
-        pid_file = isolated_environment['pid_file']
-        pid_file.write_text(str(os.getpid()))
+    def test_stop_recording_resets_status_on_error(self, isolated_environment, mock_notify):
+        """DB status should be reset to 'idle' even when transcription fails."""
+        import state_db as _state_db
 
-        # Create a fake audio file
         audio_file = isolated_environment['config_dir'] / "recording_test.wav"
         audio_file.write_bytes(b'\x00' * 100)
-        audio_path_file = isolated_environment['config_dir'] / "recording_path.txt"
-        audio_path_file.write_text(str(audio_file))
-        voice_input.AUDIO_PATH_FILE = audio_path_file
+
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=os.getpid(),
+            recording_path=str(audio_file),
+        )
 
         with patch('voice_input.is_daemon_running', return_value=True):
             with patch('voice_input.os.kill', side_effect=ProcessLookupError):
-                with patch('voice_input.send_to_daemon') as mock_send:
-                    # First call = recording_stop, second = transcribe (fail), third = set_idle
-                    mock_send.side_effect = [
-                        {"status": "ok"},       # recording_stop
-                        {"error": "ASR failed"},  # transcribe
-                        {"status": "ok"},       # set_idle
-                    ]
+                with patch('voice_input.send_to_daemon', return_value={"error": "ASR failed"}):
                     voice_input.stop_recording()
 
-        # Processing flag must be cleaned up even after failure
-        assert not processing_file.exists()
+        # DB status must be idle even after failure
+        s = _state_db.get_state(isolated_environment["state_db_path"])
+        assert s["status"] == "idle"
 
-    def test_processing_flag_blocks_concurrent_toggle(self, isolated_environment, mock_notify):
+    def test_processing_status_blocks_concurrent_toggle(self, isolated_environment, mock_notify):
         """Simulate the real race: stop_recording in progress, concurrent toggle arrives."""
-        processing_file = isolated_environment['processing_file']
-        pid_file = isolated_environment['pid_file']
-        pid_file.write_text(str(os.getpid()))
+        import state_db as _state_db
+
+        audio_file = isolated_environment['config_dir'] / "recording_test.wav"
+        audio_file.write_bytes(b'\x00' * 100)
+
+        _state_db.update_state(
+            isolated_environment["state_db_path"],
+            status="recording",
+            recording_pid=os.getpid(),
+            recording_path=str(audio_file),
+        )
 
         concurrent_start_called = [False]
 
         def slow_transcribe(command, data=None, timeout=60):
-            if command == "recording_stop":
-                return {"status": "ok"}
-            elif command == "transcribe":
-                # During transcription, try concurrent toggle
+            if command == "transcribe":
+                # During transcription, DB status is 'processing'
+                # Try concurrent toggle — should be blocked by DB status
                 result = try_concurrent_toggle()
                 concurrent_start_called[0] = result
                 return {"text": "test transcription"}
-            elif command == "set_idle":
-                return {"status": "ok"}
             return {"status": "ok"}
 
         def try_concurrent_toggle():

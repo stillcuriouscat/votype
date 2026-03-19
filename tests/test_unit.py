@@ -153,34 +153,49 @@ class TestIsProcessRunning:
 
 
 class TestIsRecording:
-    """Test is_recording function."""
+    """Test is_recording function — now DB-based."""
 
-    def test_delegates_to_is_process_running(self, tmp_path, monkeypatch):
-        """Should correctly delegate to is_process_running."""
-        pid_file = tmp_path / "recording.pid"
-        monkeypatch.setattr('voice_input.PID_FILE', pid_file)
+    def test_returns_false_when_idle(self, tmp_path, monkeypatch):
+        """Should return False when DB status is idle."""
+        import state_db as _state_db
+        db_path = tmp_path / "state.db"
+        monkeypatch.setattr('voice_input.STATE_DB_PATH', db_path)
+        monkeypatch.setattr('state_db.DEFAULT_DB_PATH', db_path)
+        _state_db.init_db(db_path)
 
-        # No PID file
         assert voice_input.is_recording() is False
 
-        # Has PID file (current process)
-        pid_file.write_text(str(os.getpid()))
+    def test_returns_true_when_recording_with_live_pid(self, tmp_path, monkeypatch):
+        """Should return True when DB status is recording and PID is alive."""
+        import state_db as _state_db
+        db_path = tmp_path / "state.db"
+        monkeypatch.setattr('voice_input.STATE_DB_PATH', db_path)
+        monkeypatch.setattr('state_db.DEFAULT_DB_PATH', db_path)
+        _state_db.init_db(db_path)
+        _state_db.update_state(db_path, status="recording", recording_pid=os.getpid(), recording_path="/tmp/test.wav")
+
         assert voice_input.is_recording() is True
 
 
 class TestIsDaemonRunning:
     """Test is_daemon_running function."""
 
-    def test_delegates_to_is_process_running(self, tmp_path, monkeypatch):
-        """Should correctly delegate to is_process_running."""
+    def test_returns_false_when_no_pid_or_lock(self, tmp_path, monkeypatch):
+        """Should return False when no PID file and no lock held."""
         daemon_pid_file = tmp_path / "daemon.pid"
+        daemon_lock_file = tmp_path / "daemon.lock"
         monkeypatch.setattr('voice_input.DAEMON_PID_FILE', daemon_pid_file)
+        monkeypatch.setattr('voice_input.DAEMON_LOCK_FILE', daemon_lock_file)
 
-        # No PID file
+        # No PID file, no lock
         assert voice_input.is_daemon_running() is False
 
-        # Has PID file (current process)
-        daemon_pid_file.write_text(str(os.getpid()))
+    def test_returns_true_when_lock_held(self, tmp_path, monkeypatch):
+        """Should return True when flock is held by another process."""
+        daemon_lock_file = tmp_path / "daemon.lock"
+        monkeypatch.setattr('voice_input.DAEMON_LOCK_FILE', daemon_lock_file)
+        monkeypatch.setattr('voice_input._is_daemon_lock_held', lambda: True)
+
         assert voice_input.is_daemon_running() is True
 
 
@@ -195,7 +210,9 @@ class TestIsDaemonReady:
     def test_returns_false_when_daemon_not_running(self, tmp_path, monkeypatch):
         """Should return False when daemon is not running."""
         daemon_pid_file = tmp_path / "daemon.pid"
+        daemon_lock_file = tmp_path / "daemon.lock"
         monkeypatch.setattr('voice_input.DAEMON_PID_FILE', daemon_pid_file)
+        monkeypatch.setattr('voice_input.DAEMON_LOCK_FILE', daemon_lock_file)
 
         # No PID file
         assert voice_input.is_daemon_ready() is False

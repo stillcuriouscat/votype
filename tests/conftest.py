@@ -23,12 +23,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import voice_input and save defaults (before any test modifications)
 import voice_input
+import state_db
+
 _DEFAULT_CONFIG_DIR = Path.home() / ".config" / "voice-input"
 _DEFAULT_PID_FILE = _DEFAULT_CONFIG_DIR / "recording.pid"
 _DEFAULT_AUDIO_FILE = _DEFAULT_CONFIG_DIR / "recording.wav"
 _DEFAULT_DAEMON_PID_FILE = _DEFAULT_CONFIG_DIR / "daemon.pid"
 _DEFAULT_SOCKET_PATH = _DEFAULT_CONFIG_DIR / "daemon.sock"
 _DEFAULT_MODEL_STATE_FILE = voice_input.MODEL_STATE_FILE
+_DEFAULT_STATE_DB_PATH = state_db.DEFAULT_DB_PATH
 
 # Save original function references (prevent mock leaks)
 _ORIGINAL_IS_RECORDING = voice_input.is_recording
@@ -117,6 +120,9 @@ def reset_voice_input_state(request):
     voice_input.DAEMON_PID_FILE = _DEFAULT_DAEMON_PID_FILE
     voice_input.SOCKET_PATH = _DEFAULT_SOCKET_PATH
     voice_input.MODEL_STATE_FILE = _DEFAULT_MODEL_STATE_FILE
+    state_db.DEFAULT_DB_PATH = _DEFAULT_STATE_DB_PATH
+    if hasattr(voice_input, 'STATE_DB_PATH'):
+        voice_input.STATE_DB_PATH = _DEFAULT_STATE_DB_PATH
 
     # Restore original function references (prevent mock leaks)
     voice_input.is_recording = _ORIGINAL_IS_RECORDING
@@ -314,9 +320,6 @@ def mock_socket_server(temp_socket):
     responses = {
         "ping": {"status": "ok"},
         "transcribe": {"text": "mock transcription result"},
-        "recording_start": {"status": "ok"},
-        "recording_stop": {"status": "ok"},
-        "set_idle": {"status": "ok"},
         "stop": {"status": "stopping"},
     }
 
@@ -384,6 +387,9 @@ def isolated_environment(tmp_path, monkeypatch):
     for icon_name in ["mic-idle.svg", "mic-recording.svg", "mic-processing.svg"]:
         (icons_dir / icon_name).write_text("<svg></svg>")
 
+    # Set up SQLite state DB in temp dir
+    state_db_path = config_dir / "state.db"
+
     # Patch environment
     monkeypatch.setattr('voice_input.CONFIG_DIR', config_dir)
     monkeypatch.setattr('voice_input.PID_FILE', config_dir / "recording.pid")
@@ -392,6 +398,9 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setattr('voice_input.SOCKET_PATH', config_dir / "daemon.sock")
     monkeypatch.setattr('voice_input.PROCESSING_FILE', config_dir / "processing.flag")
     monkeypatch.setattr('voice_input.MODEL_STATE_FILE', config_dir / "current_model.txt")
+    monkeypatch.setattr('voice_input.STATE_DB_PATH', state_db_path)
+    monkeypatch.setattr('state_db.DEFAULT_DB_PATH', state_db_path)
+    state_db.init_db(state_db_path)
 
     yield {
         'config_dir': config_dir,
@@ -403,6 +412,7 @@ def isolated_environment(tmp_path, monkeypatch):
         'processing_file': config_dir / "processing.flag",
         'audio_file': config_dir / "recording.wav",
         'model_state_file': config_dir / "current_model.txt",
+        'state_db_path': state_db_path,
     }
 
 

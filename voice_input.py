@@ -34,6 +34,7 @@ from pathlib import Path
 from model_configs import MODEL_PRESETS, DEFAULT_MODEL, DEVICE, HOTWORDS, ModelLoader, ModelInference
 from post_processor_presets import POST_PROCESSOR_PRESETS, DEFAULT_POST_PROCESSOR
 from post_processor_configs import PostProcessorLoader, PostProcessorInference
+from state_db import init_db, get_state, update_state
 
 # AppIndicator (system tray icon)
 try:
@@ -72,10 +73,14 @@ _RECORDER = "pw-record" if shutil.which("pw-record") else "arecord"
 MODEL_STATE_FILE = CONFIG_DIR / "current_model.txt"
 POST_PROCESSOR_STATE_FILE = CONFIG_DIR / "current_post_processor.txt"
 
+# SQLite state database path (mirrors state_db.DEFAULT_DB_PATH)
+STATE_DB_PATH = Path.home() / ".config" / "voice-input" / "state.db"
+
 
 def ensure_config_dir():
-    """Ensure config directory exists."""
+    """Ensure config directory exists and initialize state DB."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    init_db(STATE_DB_PATH)
     _log("INIT", f"config dir ensured: {CONFIG_DIR}")
 
 
@@ -154,8 +159,20 @@ def is_process_running(pid_file):
 
 
 def is_recording():
-    """Check whether recording is in progress."""
-    return is_process_running(PID_FILE)
+    """Check whether recording is in progress via DB status + PID liveness."""
+    state = get_state(STATE_DB_PATH)
+    if state["status"] != "recording":
+        return False
+    pid = state["recording_pid"]
+    if pid is None:
+        update_state(STATE_DB_PATH, status="idle", recording_pid=None, recording_path=None)
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        update_state(STATE_DB_PATH, status="idle", recording_pid=None, recording_path=None)
+        return False
 
 
 def _cleanup_daemon_files():
@@ -267,13 +284,6 @@ def start_recording():
     # Generate timestamped filename for this recording
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     audio_file = CONFIG_DIR / f"recording_{ts}.wav"
-    AUDIO_PATH_FILE.write_text(str(audio_file))
-    _log("TRACE", f"recording path saved: {audio_file}")
-
-    # Notify the daemon to update icon status
-    if is_daemon_running():
-        send_to_daemon("recording_start")
-        _log("IPC", "sent recording_start to daemon")
 
     # Use Popen to start recording (better process management)
     try:
@@ -302,15 +312,12 @@ def start_recording():
         )
         _log("PROC", f"recorder spawned: {_RECORDER} (PID {proc.pid})")
 
-        pid = proc.pid
-        PID_FILE.write_text(str(pid))
-        _log("PROC", f"recording PID saved: {pid}")
-        print(f"Recording started (PID: {pid}, recorder: {_RECORDER}, file: {audio_file.name})")
+        update_state(STATE_DB_PATH, status="recording", recording_pid=proc.pid, recording_path=str(audio_file))
+        _log("PROC", f"recording state saved: PID={proc.pid}, path={audio_file.name}")
+        print(f"Recording started (PID: {proc.pid}, recorder: {_RECORDER}, file: {audio_file.name})")
     except (FileNotFoundError, OSError) as e:
         _log("ERROR", f"start_recording failed: {e}")
-        AUDIO_PATH_FILE.unlink(missing_ok=True)
-        if is_daemon_running():
-            send_to_daemon("set_idle")
+        update_state(STATE_DB_PATH, status="idle", recording_pid=None, recording_path=None)
         notify("❌ Voice Input", f"Failed to start recording: {e}", "critical")
 
 
@@ -323,46 +330,41 @@ def stop_recording():
         notify("⚠️ Voice Input", "Abnormal state: no recording in progress", "critical")
         return
 
+    # CRITIC-R2-C1: Read recording_pid AND recording_path from DB BEFORE the kill sequence
+    state = get_state(STATE_DB_PATH)
+    rec_pid = state["recording_pid"]
+    rec_path = state["recording_path"]
+
     # Mark processing state immediately — prevents concurrent toggle from starting new recording
-    PROCESSING_FILE.write_text(str(os.getpid()))
-    _log("STATE", "processing flag set")
+    update_state(STATE_DB_PATH, status="processing")
+    _log("STATE", "status set to processing in DB")
     _log_to_notify_file("processing started (recording stopped, transcription pending)")
 
-    # Notify the daemon to update icon status (show processing/orange)
-    daemon_running = is_daemon_running()
-    if daemon_running:
-        send_to_daemon("recording_stop")
-        _log("IPC", "sent recording_stop to daemon")
-
     # Stop recording
-    try:
-        pid = int(PID_FILE.read_text().strip())
-        os.kill(pid, signal.SIGTERM)
-        _log("PROC", f"SIGTERM sent to recorder PID {pid}")
-        time.sleep(0.3)
-    except (ProcessLookupError, ValueError) as e:
-        _log("ERROR", f"kill recorder failed: {e}")
-        pass
+    if rec_pid is not None:
+        try:
+            os.kill(rec_pid, signal.SIGTERM)
+            _log("PROC", f"SIGTERM sent to recorder PID {rec_pid}")
+            time.sleep(0.3)
+        except (ProcessLookupError, ValueError) as e:
+            _log("ERROR", f"kill recorder failed: {e}")
 
-    PID_FILE.unlink(missing_ok=True)
-    _log("PID", "recording PID file removed")
+    # Clear recording fields in DB
+    update_state(STATE_DB_PATH, recording_pid=None, recording_path=None)
 
-    # Determine the audio file path (timestamped or legacy fallback)
+    # Determine the audio file path from DB (with legacy fallback)
     audio_file = None
-    if AUDIO_PATH_FILE.exists():
-        raw = AUDIO_PATH_FILE.read_text().strip()
-        AUDIO_PATH_FILE.unlink(missing_ok=True)
-        if raw:
-            audio_file = Path(raw)
+    if rec_path:
+        audio_file = Path(rec_path)
     if audio_file is None or not audio_file.exists():
         # Fallback to legacy path
         audio_file = AUDIO_FILE
 
+    daemon_running = is_daemon_running()
+
     if not audio_file.exists():
-        PROCESSING_FILE.unlink(missing_ok=True)
-        _log("STATE", "processing flag cleared (no audio)")
-        if daemon_running:
-            send_to_daemon("set_idle")
+        update_state(STATE_DB_PATH, status="idle")
+        _log("STATE", "status set to idle (no audio)")
         notify("❌ Voice Input", "Recording file not found", "critical")
         return
 
@@ -379,16 +381,13 @@ def stop_recording():
             error = response.get("error", "Unknown error") if response else "Daemon not responding"
             notify("❌ Voice Input", f"Transcription failed: {error}", "critical")
             # On failure, the current recording is preserved for recovery
-        # Set idle AFTER text has been pasted (icon stays orange during entire pipeline)
-        send_to_daemon("set_idle")
-        _log("IPC", "sent set_idle (transcription complete)")
     else:
         # No daemon is an abnormal situation (normally toggle starts the daemon first)
         notify("❌ Voice Input", "Service error\nRun voice-input daemon to start\nor check /tmp/voice-input-daemon.log", "critical")
 
-    # Clear processing flag — allows new recordings
-    PROCESSING_FILE.unlink(missing_ok=True)
-    _log("STATE", "processing flag cleared")
+    # Set idle AFTER text has been pasted (icon stays orange during entire pipeline)
+    update_state(STATE_DB_PATH, status="idle")
+    _log("STATE", "status set to idle")
     _log_to_notify_file("processing complete")
 
     # Always clean up old recordings (>2h), regardless of transcription result
@@ -547,21 +546,25 @@ def toggle_recording():
     """Toggle recording state."""
     _log_to_notify_file("toggle_recording() called")
 
-    # Check if processing is in progress (ASR/Gemini/pasting)
-    if PROCESSING_FILE.exists():
-        try:
-            age = time.time() - PROCESSING_FILE.stat().st_mtime
-            if age < 120:
-                _log_to_notify_file(f"processing in progress ({age:.1f}s), ignoring toggle")
-                notify("⏳ Voice Input", "Processing in progress, please wait...")
-                return
-            else:
-                _log_to_notify_file(f"stale processing flag ({age:.1f}s), cleaning up")
-                PROCESSING_FILE.unlink(missing_ok=True)
-                if is_daemon_running():
-                    send_to_daemon("set_idle")
-        except OSError:
-            pass
+    # Check if processing is in progress (ASR/Gemini/pasting) via DB
+    state = get_state(STATE_DB_PATH)
+    if state["status"] == "processing":
+        updated_at = state["updated_at"]
+        age = None
+        if updated_at:
+            try:
+                from datetime import datetime, timezone
+                ts = datetime.fromisoformat(updated_at)
+                age = (datetime.now(timezone.utc) - ts).total_seconds()
+            except (ValueError, TypeError):
+                pass
+        if age is not None and age < 120:
+            _log_to_notify_file(f"processing in progress ({age:.1f}s), ignoring toggle")
+            notify("⏳ Voice Input", "Processing in progress, please wait...")
+            return
+        else:
+            _log_to_notify_file(f"stale processing status ({age}s), cleaning up")
+            update_state(STATE_DB_PATH, status="idle")
 
     # Check whether the daemon is truly ready
     if not is_daemon_ready():
@@ -1144,13 +1147,6 @@ class ASRDaemon:
 
     def handle_client(self, client):
         """Handle client request"""
-        # Simple status switch command mapping
-        status_commands = {
-            "recording_start": "recording",
-            "recording_stop": "processing",
-            "set_idle": "idle",
-        }
-
         try:
             data = client.recv(4096).decode()
             msg = json.loads(data)
@@ -1209,10 +1205,6 @@ class ASRDaemon:
                         response = {"status": "ok", "post_processor": new_pp_id, "name": preset["name"]}
                     except Exception as e:
                         response = {"error": f"Failed to switch post-processor: {e}"}
-            elif command in status_commands:
-                _log("SOCKET", f"status command: {command}")
-                self.set_status(status_commands[command])
-                response = {"status": "ok"}
             else:
                 response = {"error": f"Unknown command: {command}"}
 
