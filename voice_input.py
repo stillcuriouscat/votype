@@ -729,6 +729,7 @@ class ASRDaemon:
         self._secondary_model = None  # Secondary ASR model (faster-whisper for dual fusion)
         self._last_secondary_text = None  # Last secondary ASR transcription result
         self._current_db_status = "idle"  # Tracks last DB status for polling delta
+        self._current_icon_status = "idle"  # Tracks last icon status for dedup
 
     def setup_indicator(self):
         """Set up the system tray icon."""
@@ -842,7 +843,11 @@ class ASRDaemon:
         threading.Thread(target=delayed_quit, daemon=True).start()
 
     def set_status(self, status):
-        """Set status (idle/recording/processing)"""
+        """Set status (idle/recording/processing/polishing) with dedup guard."""
+        if status == self._current_icon_status:
+            print(f"[Indicator] Status already {status}, skipping")
+            return
+
         _log("STATE", f"icon status: {status}")
         print(f"[Indicator] Setting status to: {status}")
         if not self.indicator:
@@ -862,6 +867,7 @@ class ASRDaemon:
             return False
 
         GLib.idle_add(update)
+        self._current_icon_status = status
     
     def load_model(self, model_id=None):
         """

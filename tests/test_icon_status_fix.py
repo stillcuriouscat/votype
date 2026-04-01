@@ -162,3 +162,42 @@ class TestHandleTranscribeNoRedundantStatus:
 
         # set_status should not be called at all in _handle_transcribe
         daemon.set_status.assert_not_called()
+
+
+# ============ US-003: Dedup guard in set_status ============
+
+
+class TestSetStatusDedup:
+    """Verify set_status() deduplicates redundant icon updates."""
+
+    def test_duplicate_status_calls_glib_once(self, monkeypatch):
+        """Calling set_status('processing') twice should invoke GLib.idle_add only once."""
+        from voice_input import ASRDaemon
+
+        daemon = MagicMock(spec=ASRDaemon)
+        daemon._current_icon_status = "idle"
+        daemon.indicator = MagicMock()
+        daemon.status_item = MagicMock()
+
+        with patch("voice_input.GLib") as mock_glib, \
+             patch("voice_input._log"):
+            ASRDaemon.set_status(daemon, "processing")
+            ASRDaemon.set_status(daemon, "processing")
+
+        assert mock_glib.idle_add.call_count == 1
+
+    def test_different_status_calls_glib_twice(self, monkeypatch):
+        """Calling set_status('processing') then set_status('polishing') should invoke GLib.idle_add twice."""
+        from voice_input import ASRDaemon
+
+        daemon = MagicMock(spec=ASRDaemon)
+        daemon._current_icon_status = "idle"
+        daemon.indicator = MagicMock()
+        daemon.status_item = MagicMock()
+
+        with patch("voice_input.GLib") as mock_glib, \
+             patch("voice_input._log"):
+            ASRDaemon.set_status(daemon, "processing")
+            ASRDaemon.set_status(daemon, "polishing")
+
+        assert mock_glib.idle_add.call_count == 2
