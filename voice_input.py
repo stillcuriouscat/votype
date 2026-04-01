@@ -127,6 +127,50 @@ def _log(tag, message):
         pass
 
 
+CSV_PATH = CONFIG_DIR / "transcriptions.csv"
+_CSV_HEADER = ["timestamp", "audio_path", "primary_asr", "secondary_asr", "polished", "post_processor"]
+
+
+def _log_csv(csv_path=None, audio_path="", primary_asr="", secondary_asr="",
+             polished="", post_processor=""):
+    """Append a training data row to the CSV log.
+
+    Skips writing if primary_asr is empty. Creates file with header on first call.
+
+    Args:
+        csv_path: Override CSV path (for testing with tmp_path). Defaults to CSV_PATH.
+        audio_path: Path to the audio recording file.
+        primary_asr: Raw primary ASR transcription (SenseVoice).
+        secondary_asr: Raw secondary ASR transcription (faster-whisper), empty if unavailable.
+        polished: Final polished text after post-processing.
+        post_processor: Post-processor ID used (gemini-merge, gemini-fix, none, etc.).
+    """
+    if not primary_asr:
+        return
+
+    import csv
+    from datetime import datetime
+
+    target = csv_path if csv_path is not None else CSV_PATH
+    write_header = not target.exists()
+
+    try:
+        with open(target, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(_CSV_HEADER)
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                str(audio_path),
+                primary_asr,
+                secondary_asr or "",
+                polished,
+                post_processor,
+            ])
+    except OSError as exc:
+        _log("CSV", f"failed to write CSV: {exc}")
+
+
 def notify(title, message, urgency="normal"):
     """Send a desktop notification and write to the log file."""
     # Always log to file so we can debug notification issues
@@ -1051,9 +1095,6 @@ class ASRDaemon:
                 }[self.post_processor_framework]
                 result = process_fn(result, config, glossary_ctx)
 
-            # Restore processing status (orange icon) after LLM call
-            update_state(status="processing")
-
             # Vocab accumulation (only if LLM changed something)
             if before_polish != result:
                 self._vocab = diff_to_vocab(before_polish, result, self._vocab)
@@ -1175,8 +1216,18 @@ class ASRDaemon:
                 self._last_secondary_text = None
 
         if response and "text" in response and response["text"]:
-            _log("ASR", f"raw: {response['text'][:120]}")
-            response["text"] = self._post_process(response["text"])
+            raw_primary = response["text"]
+            _log("ASR", f"raw: {raw_primary[:120]}")
+            response["text"] = self._post_process(raw_primary)
+
+            # Log training data: raw ASR outputs + polished result
+            _log_csv(
+                audio_path=audio_path,
+                primary_asr=raw_primary,
+                secondary_asr=self._last_secondary_text or "",
+                polished=response["text"],
+                post_processor=getattr(self, 'current_post_processor_id', ''),
+            )
         elif response and "error" in response:
             _log("ASR", f"error: {response['error']}")
         return response
