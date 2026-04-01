@@ -1154,7 +1154,6 @@ class ASRDaemon:
         main thread. Both release the GIL via C extensions (FunASR CUDA /
         CTranslate2), enabling true CPU+GPU parallelism.
         """
-        self.set_status("processing")
         audio_path = msg.get("data")
         t_start = time.time()
 

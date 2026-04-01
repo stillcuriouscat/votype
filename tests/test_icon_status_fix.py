@@ -106,3 +106,59 @@ class TestPostProcessNoStatusRevert:
         # Only 'polishing' should appear, never 'processing'
         assert "polishing" in status_calls
         assert "processing" not in status_calls
+
+
+# ============ US-002: No redundant set_status('processing') in _handle_transcribe ============
+
+
+class TestHandleTranscribeNoRedundantStatus:
+    """Verify _handle_transcribe() does NOT call set_status('processing')."""
+
+    def test_set_status_not_called_with_processing(self, pp_env, monkeypatch):
+        """_handle_transcribe does not call self.set_status('processing') at entry."""
+        from voice_input import ASRDaemon
+
+        daemon = MagicMock(spec=ASRDaemon)
+        daemon._secondary_model = None
+        daemon._last_secondary_text = None
+        daemon.current_post_processor_id = "none"
+        daemon.post_processor_framework = "regex"
+        daemon.post_processor_model = None
+        daemon.punc_model = None
+        daemon._vocab = {}
+
+        # transcribe returns a simple result
+        daemon.transcribe.return_value = {"text": "hello world"}
+
+        # _post_process returns the text as-is
+        daemon._post_process.return_value = "hello world"
+
+        msg = {"data": "/tmp/test_audio.wav"}
+
+        ASRDaemon._handle_transcribe(daemon, msg)
+
+        # set_status should NOT have been called with 'processing'
+        for c in daemon.set_status.call_args_list:
+            assert c != call("processing"), \
+                "set_status('processing') should not be called in _handle_transcribe — CLI handles this via DB"
+
+    def test_handle_transcribe_relies_on_db_status(self, pp_env, monkeypatch):
+        """_handle_transcribe does not directly set any status — relies on DB-driven status."""
+        from voice_input import ASRDaemon
+
+        daemon = MagicMock(spec=ASRDaemon)
+        daemon._secondary_model = None
+        daemon._last_secondary_text = None
+        daemon.current_post_processor_id = "none"
+        daemon.post_processor_framework = "regex"
+        daemon.post_processor_model = None
+        daemon.punc_model = None
+        daemon._vocab = {}
+        daemon.transcribe.return_value = {"text": "test"}
+        daemon._post_process.return_value = "test"
+
+        msg = {"data": "/tmp/test.wav"}
+        ASRDaemon._handle_transcribe(daemon, msg)
+
+        # set_status should not be called at all in _handle_transcribe
+        daemon.set_status.assert_not_called()
