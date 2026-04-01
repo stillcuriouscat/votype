@@ -437,7 +437,8 @@ class TestStateConsistency:
         daemon.set_status("idle")
 
         # Verify state transition order
-        expected = ["mic-idle", "mic-recording", "mic-processing", "mic-idle"]
+        # Note: initial set_status("idle") is deduped because _current_icon_status starts at 'idle' (US-003)
+        expected = ["mic-recording", "mic-processing", "mic-idle"]
         assert state_history == expected
 
 
