@@ -72,7 +72,7 @@ class TestInitDB:
         assert row["daemon_pid"] is None
         assert row["recording_pid"] is None
         assert row["recording_path"] is None
-        assert row["post_processor"] == "none"
+        assert row["post_processor"] == "gemini-merge"
         assert row["updated_at"] is None
 
     def test_enables_wal_mode(self, initialized_db):
@@ -170,14 +170,14 @@ class TestLegacyMigration:
         state_db.init_db(db_path)
 
         state = state_db.get_state(db_path)
-        assert state["post_processor"] == "none"  # Default, not migrated
+        assert state["post_processor"] == "gemini-merge"  # Default, not migrated
         assert not legacy_file.exists()
 
     def test_no_legacy_file_is_fine(self, db_path):
         """init_db works normally when no legacy file exists."""
         state_db.init_db(db_path)
         state = state_db.get_state(db_path)
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
 
 
 # ============ get_state Tests ============
@@ -193,7 +193,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
         assert state["updated_at"] is None
 
     def test_returns_updated_values(self, initialized_db):

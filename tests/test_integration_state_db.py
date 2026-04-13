@@ -115,7 +115,7 @@ class TestInitDb:
         """init_db() does not error when no legacy file exists."""
         init_db(db_path)
         state = get_state(db_path)
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
 
     def test_init_db_migration_strips_whitespace(self, db_path):
         """init_db() strips whitespace from legacy file value."""
@@ -162,7 +162,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
         # updated_at is None for default row (only set by update_state)
 
     def test_get_state_self_initializes_if_table_missing(self, db_path):
@@ -186,7 +186,7 @@ class TestGetState:
             "daemon_pid": None,
             "recording_pid": None,
             "recording_path": None,
-            "post_processor": "none",
+            "post_processor": "gemini-merge",
             "updated_at": None,
         }
 
@@ -387,10 +387,10 @@ class TestDataModelContracts:
         state = get_state(initialized_db)
         assert state["status"] == "idle"
 
-    def test_post_processor_default_is_none_string(self, initialized_db):
-        """Default post_processor is 'none' (string, not Python None)."""
+    def test_post_processor_default_is_gemini_merge_string(self, initialized_db):
+        """Default post_processor is 'gemini-merge' (string, not Python None)."""
         state = get_state(initialized_db)
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
         assert isinstance(state["post_processor"], str)
 
     def test_updated_at_iso8601_utc_format(self, initialized_db):
@@ -481,7 +481,7 @@ class TestErrorTaxonomy:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
         assert state["updated_at"] is None
 
     def test_init_db_never_raises(self, tmp_path):

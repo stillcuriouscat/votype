@@ -24,13 +24,14 @@ _VALID_COLUMNS: frozenset[str] = frozenset({
     "recording_path", "post_processor", "updated_at",
 })
 
+# Matches SQL DEFAULT; if this PP fails to load, load_post_processor() falls back to regex-only
 _SAFE_DEFAULT: dict[str, object] = {
     "id": 1,
     "status": "idle",
     "daemon_pid": None,
     "recording_pid": None,
     "recording_path": None,
-    "post_processor": "none",
+    "post_processor": "gemini-merge",
     "updated_at": None,
 }
 
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     daemon_pid INTEGER,
     recording_pid INTEGER,
     recording_path TEXT,
-    post_processor TEXT NOT NULL DEFAULT 'none',
+    post_processor TEXT NOT NULL DEFAULT 'gemini-merge',
     updated_at TEXT
 )"""
 

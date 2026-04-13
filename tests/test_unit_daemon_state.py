@@ -235,7 +235,7 @@ class TestSyncStatusFromDb:
             lambda *a, **kw: {
                 "id": 1, "status": "idle", "daemon_pid": None,
                 "recording_pid": None, "recording_path": None,
-                "post_processor": "none", "updated_at": None,
+                "post_processor": "gemini-merge", "updated_at": None,
             },
         )
 
@@ -617,12 +617,12 @@ class TestPostProcessorDbPersistence:
         state = get_state(daemon_state_env["state_db_path"])
         assert state["post_processor"] == "gemini-fix"
 
-    def test_empty_db_returns_default_none(self, daemon_state_env) -> None:
-        """Fresh DB → post_processor defaults to 'none'."""
+    def test_empty_db_returns_default_gemini_merge(self, daemon_state_env) -> None:
+        """Fresh DB → post_processor defaults to 'gemini-merge'."""
         from state_db import get_state
 
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
 
     @pytest.mark.parametrize(
         "preset_id",

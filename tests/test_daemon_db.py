@@ -180,10 +180,10 @@ class TestCurrentDbStatusInit:
         daemon = voice_input.ASRDaemon()
         assert daemon.current_post_processor_id == voice_input.DEFAULT_POST_PROCESSOR
 
-    def test_init_uses_default_when_db_has_none(self, db_env):
-        """Default 'none' post_processor from fresh DB works."""
+    def test_init_uses_default_when_db_has_gemini_merge(self, db_env):
+        """Default 'gemini-merge' post_processor from fresh DB works."""
         daemon = voice_input.ASRDaemon()
-        # Fresh DB has post_processor='none', which is a valid preset key
+        # Fresh DB has post_processor='gemini-merge', which is a valid preset key
         assert daemon.current_post_processor_id in voice_input.POST_PROCESSOR_PRESETS
 
 
@@ -422,7 +422,7 @@ class TestLoadPostProcessorDb:
         assert state["post_processor"] == "none"
 
     def test_fallback_does_not_overwrite_db_on_error(self, db_env):
-        """When load fails and falls back to regex, 'none' is written to DB."""
+        """DB retains the previous value (preserves retry semantics on next restart)."""
         daemon = _make_daemon()
         # Pre-set a value
         update_state(db_env["db_path"], post_processor="gemini-fix")
