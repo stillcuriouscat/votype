@@ -117,5 +117,5 @@ POST_PROCESSOR_PRESETS = {
     },
 }
 
-# Default post-processor (regex only, no LLM overhead)
-DEFAULT_POST_PROCESSOR = "none"
+# Default post-processor (dual ASR fusion for best quality)
+DEFAULT_POST_PROCESSOR = "gemini-merge"
