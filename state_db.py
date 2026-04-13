@@ -164,4 +164,4 @@ def update_state(db_path: Optional[Path] = None, **kwargs: object) -> None:
             conn.close()
 
     except (sqlite3.Error, OSError) as e:
-        logger.warning("update_state failed: %s", e)
+        logger.error("update_state FAILED (data may be stale): %s — kwargs=%s", e, kwargs)
