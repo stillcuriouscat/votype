@@ -1,93 +1,53 @@
 {
   "project": "Votype",
-  "branchName": "ralph/sqlite-state",
-  "description": "Replace fragmented file-based state management (PID files, processing.flag, IPC status commands) with a single SQLite database as the source of truth. CLI writes state directly to DB, daemon polls DB every second to update GTK icon. Eliminates icon/state inconsistency bugs caused by lost IPC messages.",
+  "branchName": "ralph/gemini-output-truncation-fix",
+  "description": "Fix Gemini output truncation for long audio (voice_input-a3i). Root cause: vertex_proxy.py hardcodes max_output_tokens=512, truncating long transcriptions to ~1164 chars. CSV evidence: primary_asr=2250 chars, secondary_asr=2373 chars, but polished output only 1164 chars. Secondary issue: notify log [:120] truncation caused misdiagnosis of ASR truncation (ASR was actually complete).",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Create state_db module with SQLite schema and accessors",
-      "description": "New module state_db.py providing init_db(), get_state(), update_state() functions. Single table daemon_state with one row (id=1). Schema: status TEXT, daemon_pid INTEGER, recording_pid INTEGER, recording_path TEXT, post_processor TEXT, updated_at TEXT. WAL mode for concurrent reader/writer. All writes use BEGIN IMMEDIATE transactions.",
+      "title": "vertex_proxy.py: accept max_output_tokens from JSON stdin",
+      "description": "In vertex_proxy.py, read optional 'max_output_tokens' field from the stdin JSON payload. Use it in GenerateContentConfig instead of the hardcoded 512. Default to 512 when the field is absent (backward compatibility). Also update the --help text and the docstring to document the new field.",
       "acceptanceCriteria": [
-        "state_db.py created with init_db(db_path), get_state(db_path) -> dict, update_state(db_path, **kwargs) functions",
-        "DB path: ~/.config/voice-input/state.db",
-        "Schema: daemon_state table with columns: id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL DEFAULT 'idle', daemon_pid INTEGER, recording_pid INTEGER, recording_path TEXT, post_processor TEXT NOT NULL DEFAULT 'none', updated_at TEXT",
-        "init_db() creates table if not exists, inserts default row if empty, enables WAL mode",
-        "update_state() uses BEGIN IMMEDIATE transaction, updates updated_at automatically",
-        "get_state() returns dict with all column values",
-        "Thread-safe: each call opens/closes its own connection (no shared connection across threads)",
-        "CRITIC-R1-M1: state_db.py MUST define DB path directly as Path.home() / '.config' / 'voice-input' / 'state.db' — do NOT import CONFIG_DIR from voice_input.py to avoid circular import",
-        "CRITIC-R1-M3: init_db() must migrate POST_PROCESSOR_STATE_FILE value to DB on first init — if ~/.config/voice-input/current_post_processor.txt exists, read its value and update_state(post_processor=value) before deleting the file. This ensures US-003 reads correct value from DB",
-        "CRITIC-R1-L2: get_state() must call init_db() internally if table doesn't exist — defensive against access before explicit init_db() call",
-        "Unit tests for init_db, get_state, update_state, concurrent read/write, WAL mode verification",
-        "Unit test for post_processor migration from legacy file to DB",
+        "vertex_proxy.py reads data.get('max_output_tokens', 512) from stdin JSON",
+        "GenerateContentConfig uses the dynamic value, not hardcoded 512",
+        "When JSON has no max_output_tokens field, behavior is identical to before (512)",
+        "When JSON has max_output_tokens=2048, GenerateContentConfig uses 2048",
+        "--help output mentions the max_output_tokens field",
         "Tests pass"
       ],
       "priority": 1,
-      "passes": true
+      "passes": false
     },
     {
       "id": "US-002",
-      "title": "Migrate CLI state operations from files to SQLite",
-      "description": "Replace file-based state in start_recording(), stop_recording(), toggle_recording() with SQLite calls. Remove PID_FILE writes/reads, PROCESSING_FILE writes/reads, AUDIO_PATH_FILE writes/reads. Replace is_recording() to read from DB instead of PID file check.",
+      "title": "post_processor_configs.py: dynamically compute and pass max_output_tokens",
+      "description": "In post_processor_configs.py, both process_with_vertex_ai() and process_with_gemini_merge() must compute max_output_tokens dynamically based on user_input length, and include it in the JSON payload sent to vertex_proxy.py. Formula: min(8192, max(512, len(user_input))). This ensures long transcriptions get enough output token budget while capping at 8192 to prevent runaway costs.",
       "acceptanceCriteria": [
-        "start_recording(): writes status='recording', recording_pid=PID, recording_path=path to DB instead of PID_FILE + AUDIO_PATH_FILE",
-        "CRITIC-R2-C1: stop_recording() must read recording_pid AND recording_path from DB via single get_state() call BEFORE the kill sequence — PID_FILE is no longer written, so PID_FILE.read_text() at line 339 will crash. Replace both PID_FILE.read_text (L339) and AUDIO_PATH_FILE.read_text (L353) with one get_state() at top",
-        "stop_recording(): writes status='processing' to DB instead of PROCESSING_FILE; reads recording_path from DB; writes status='idle' at end instead of deleting PROCESSING_FILE",
-        "toggle_recording(): checks DB status instead of PROCESSING_FILE existence; checks updated_at for 120s timeout",
-        "is_recording(): reads DB status=='recording' AND verifies recording_pid is alive (os.kill(pid,0))",
-        "Remove IPC commands: recording_start, recording_stop, set_idle — no longer needed for status",
-        "Keep IPC commands: transcribe, ping, get_model, set_post_processor, stop (still needed for data operations)",
-        "PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE constants kept but unused (backward compat cleanup in separate story)",
-        "Unit tests for each migrated function",
-        "Integration tests for toggle → start → stop → idle state transitions via DB",
+        "process_with_vertex_ai() stdin_data JSON includes 'max_output_tokens' key",
+        "process_with_gemini_merge() stdin_data JSON includes 'max_output_tokens' key",
+        "Formula is min(8192, max(512, len(user_input)))",
+        "For the real incident case (user_input ~4637 chars), max_output_tokens=4637",
+        "For short text (user_input=50 chars), max_output_tokens=512 (floor)",
+        "For extremely long text (user_input=20000 chars), max_output_tokens=8192 (cap)",
         "Tests pass"
       ],
       "priority": 2,
-      "passes": true
+      "passes": false
     },
     {
       "id": "US-003",
-      "title": "Daemon polls SQLite for icon status updates",
-      "description": "Add _sync_status_from_db() to ASRDaemon that reads status from DB and calls set_status() if changed. Called every second in socket_server() timeout loop. Also write daemon_pid to DB on startup and clear on shutdown.",
+      "title": "voice_input.py: remove log [:120] truncation",
+      "description": "Remove the [:120] string slicing from 4 log lines in voice_input.py that truncate ASR and post-processor output in the notify log. This truncation caused the misdiagnosis in voice_input-a3i (ASR looked truncated in logs but was actually complete in CSV). Lines: (1) line 1054 PP input log, (2) line 1128 PP output log, (3) line 1219 ASR-2 secondary log, (4) line 1225 ASR raw log.",
       "acceptanceCriteria": [
-        "ASRDaemon._sync_status_from_db(): reads status from DB, compares with self._current_db_status, calls set_status() only if changed",
-        "self._current_db_status initialized to 'idle' in __init__",
-        "socket_server() calls _sync_status_from_db() on every socket.timeout (every 1 second)",
-        "Daemon run(): writes daemon_pid to DB on startup after lock acquired",
-        "Daemon run(): clears daemon_pid in DB on shutdown (in finally block)",
-        "is_daemon_running(): reads daemon_pid from DB, verifies process alive, cleans up if dead",
-        "Post-processor changes: daemon writes post_processor to DB in load_post_processor() instead of _persist_post_processor_id()",
-        "Daemon startup: reads post_processor from DB instead of POST_PROCESSOR_STATE_FILE",
-        "Unit tests for _sync_status_from_db with mock DB",
-        "Unit tests for daemon_pid lifecycle (write on start, clear on stop)",
-        "Integration test: write status to DB from external process, verify daemon picks it up",
+        "voice_input.py line ~1054: _log('PP', f'input (...): {text}') without [:120]",
+        "voice_input.py line ~1128: _log('PP', f'output (...): {result}') without [:120]",
+        "voice_input.py line ~1219: _log('ASR-2', f'secondary: {self._last_secondary_text}') without [:120]",
+        "voice_input.py line ~1225: _log('ASR', f'raw: {raw_primary}') without [:120]",
+        "No remaining [:120] truncation in any _log() call for ASR or PP output",
         "Tests pass"
       ],
       "priority": 3,
-      "passes": true
-    },
-    {
-      "id": "US-004",
-      "title": "Update CLI status command and cleanup legacy files",
-      "description": "Update voice-input status to read from SQLite. Remove legacy file constants and functions that are no longer used. Ensure backward compatibility during transition.",
-      "acceptanceCriteria": [
-        "show_status(): reads status, daemon_pid, post_processor from DB instead of is_recording() + send_to_daemon()",
-        "Remove _persist_post_processor_id() and _restore_post_processor_id() — replaced by DB",
-        "Remove POST_PROCESSOR_STATE_FILE constant and file operations",
-        "Remove is_process_running() helper if no longer used",
-        "Keep daemon.lock and flock mechanism (not suitable for DB replacement)",
-        "Keep daemon.sock (IPC still needed for transcribe command)",
-        "CRITIC-R2-M1: Legacy file cleanup must be in voice_input.py ensure_config_dir() (NOT in state_db.py) — state_db.py cannot import voice_input constants due to circular import. ensure_config_dir() calls init_db() then deletes PID_FILE, PROCESSING_FILE, AUDIO_PATH_FILE if they exist",
-        "CRITIC-R1-M2: Update or replace ALL existing tests that reference removed functions: rewrite test_post_processor_persistence.py to test DB-based persistence, update TestIsProcessRunning/TestIsRecording in test_unit.py to test new DB-based implementations, update test_race.py and test_e2e.py references to is_process_running()",
-        "CRITIC-R3-C1: tests/test_integration.py EXISTS (453+ lines) — must update 6 test methods that reference removed IPC commands (recording_start/recording_stop/set_idle) and PID_FILE-based state. Rewrite to verify DB state transitions instead of IPC calls. Also update conftest.py mock_daemon_server to remove stale command responses",
-        "Unit tests for updated show_status()",
-        "Unit tests for legacy file cleanup on first init",
-        "E2E test: run voice-e2e-test skill (short 8s audio) to verify full pipeline works",
-        "E2E test: run test_e2e_kitty.py --duration 35 (long audio)",
-        "Tests pass"
-      ],
-      "priority": 4,
-      "passes": true
+      "passes": false
     }
   ]
 }
