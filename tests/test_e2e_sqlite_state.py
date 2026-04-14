@@ -193,8 +193,8 @@ class TestPostProcessorPersistence:
                 assert state["post_processor"] == cli_pp, \
                     f"DB has '{state['post_processor']}', CLI shows '{cli_pp}'"
                 return
-        # If no post-processor line, it should be 'none'
-        assert state["post_processor"] == "none"
+        # If no post-processor line, it should be 'gemini-merge'
+        assert state["post_processor"] == "gemini-merge"
 
 
 class TestLegacyFileCleanup:

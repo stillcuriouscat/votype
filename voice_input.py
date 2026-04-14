@@ -1377,8 +1377,9 @@ class ASRDaemon:
         # Load post-processor (non-fatal: falls back to regex-only)
         # Backward compat: firered-punc is no longer a valid post-processor
         if self.current_post_processor_id == "firered-punc":
-            print("Note: firered-punc is now automatic with firered-asr, using 'none' instead.")
-            self.current_post_processor_id = "none"
+            print(f"Note: firered-punc is now automatic with firered-asr, using '{DEFAULT_POST_PROCESSOR}' instead.")
+            self.current_post_processor_id = DEFAULT_POST_PROCESSOR
+            update_state(STATE_DB_PATH, post_processor=DEFAULT_POST_PROCESSOR)
         try:
             self.load_post_processor()
         except Exception as e:

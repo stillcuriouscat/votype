@@ -39,12 +39,12 @@ class TestPostProcessorPersistenceDB:
         assert state["post_processor"] == "gemini-fix"
 
     def test_default_when_no_update(self, tmp_path):
-        """Fresh DB should return default 'none' for post_processor."""
+        """Fresh DB should return default 'gemini-merge' for post_processor."""
         db_path = tmp_path / "state.db"
         _state_db.init_db(db_path)
 
         state = _state_db.get_state(db_path)
-        assert state["post_processor"] == "none"
+        assert state["post_processor"] == "gemini-merge"
 
     def test_all_presets_persist_correctly(self, tmp_path):
         """Every valid preset should survive write→read roundtrip in DB."""

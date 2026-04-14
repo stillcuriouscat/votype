@@ -24,13 +24,19 @@ _VALID_COLUMNS: frozenset[str] = frozenset({
     "recording_path", "post_processor", "updated_at",
 })
 
+# Matches SQL DEFAULT; if this PP fails to load, load_post_processor() falls back to regex-only
+# Deprecated post-processor IDs → replacement. get_state() auto-migrates these.
+_DEPRECATED_PP: dict[str, str] = {
+    "firered-punc": "gemini-merge",  # firered-punc is now auto-punctuation, not a post-processor
+}
+
 _SAFE_DEFAULT: dict[str, object] = {
     "id": 1,
     "status": "idle",
     "daemon_pid": None,
     "recording_pid": None,
     "recording_path": None,
-    "post_processor": "none",
+    "post_processor": "gemini-merge",
     "updated_at": None,
 }
 
@@ -41,7 +47,7 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     daemon_pid INTEGER,
     recording_pid INTEGER,
     recording_path TEXT,
-    post_processor TEXT NOT NULL DEFAULT 'none',
+    post_processor TEXT NOT NULL DEFAULT 'gemini-merge',
     updated_at TEXT
 )"""
 
@@ -112,7 +118,22 @@ def get_state(db_path: Optional[Path] = None) -> dict[str, object]:
 
             if row is None:
                 return dict(_SAFE_DEFAULT)
-            return dict(row)
+            state = dict(row)
+
+            # Auto-migrate deprecated post-processor values
+            pp = state.get("post_processor")
+            if pp in _DEPRECATED_PP:
+                new_pp = _DEPRECATED_PP[pp]
+                state["post_processor"] = new_pp
+                try:
+                    conn.execute(
+                        "UPDATE daemon_state SET post_processor=? WHERE id=1",
+                        (new_pp,),
+                    )
+                    conn.commit()
+                except sqlite3.Error:
+                    pass  # Best-effort; next get_state() will retry
+            return state
         finally:
             conn.close()
 
@@ -163,4 +184,4 @@ def update_state(db_path: Optional[Path] = None, **kwargs: object) -> None:
             conn.close()
 
     except (sqlite3.Error, OSError) as e:
-        logger.warning("update_state failed: %s", e)
+        logger.error("update_state FAILED (data may be stale): %s — kwargs=%s", e, kwargs)
