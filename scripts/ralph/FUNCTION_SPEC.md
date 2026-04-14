@@ -3,701 +3,362 @@
 > The Build agent implements these specs. The Unit-Test agent writes tests against them.
 > Neither agent should read the other's output.
 
-Generated: 2026-03-12T15:00:00+08:00
-PRD: prd.json — branch `ralph/dual-asr-fusion`, 7 stories, dual ASR fusion (FireRedASR + faster-whisper → Gemini merge)
+Generated: 2026-04-14 15:35 CST
+PRD: prd.json — ralph/gemini-output-truncation-fix, 3 stories, fix hardcoded max_output_tokens=512 and log truncation
 Architecture: HIGH_LEVEL_DESIGN.md, LOW_LEVEL_DESIGN.md
 
 ---
 
-## Module 1: model_configs.py — ASR Framework Dispatch
+## US-001: vertex_proxy.py — accept max_output_tokens from JSON stdin
 
-> US-001 (already implemented). Documented for contract reference and test coverage.
+### `vertex_proxy.main() -> None`
 
----
-
-### `ModelLoader.load_faster_whisper_model(config: Dict[str, Any], device: str = "cpu") -> WhisperModel`
-
-**Purpose**: Load a faster-whisper model with CTranslate2 backend for CPU-only inference.
+**Purpose**: Read JSON from stdin, call Gemini API, write result to stdout. Now reads optional `max_output_tokens` from stdin JSON.
 
 **Preconditions**:
-- `config` is a dict (may be empty — defaults used for missing keys)
-- `device` is a string (typically `"cpu"`)
+- stdin contains valid JSON with at least `user_input` field (non-empty string)
+- google-genai SDK is importable
+- ADC credentials are configured on the host
 
 **Postconditions**:
-- Returns a `WhisperModel` instance ready for transcription
-- Model is loaded with the specified `model_size` and `compute_type`
+- Gemini `GenerateContentConfig` is constructed with `max_output_tokens` from stdin JSON (or 512 if absent)
+- stdout contains the corrected text (stripped), exit 0
+- On any failure: stderr has error message, exit 1
 
 **Behavior Table**:
 
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: default config | `config={"model_size": "large-v3-turbo", "compute_type": "int8"}, device="cpu"` | `WhisperModel` instance | `WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")` called |
-| 2 | Normal: custom model_size | `config={"model_size": "medium", "compute_type": "float16"}, device="cpu"` | `WhisperModel` instance | `WhisperModel("medium", device="cpu", compute_type="float16")` called |
-| 3 | Edge: empty config uses defaults | `config={}, device="cpu"` | `WhisperModel` instance | `WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")` called |
-| 4 | Error: faster-whisper not installed | `config={"model_size": "large-v3-turbo"}, device="cpu"` | raises `ImportError("faster-whisper is not installed. Install it with: pip install faster-whisper")` | None |
+| # | Scenario | Input JSON | Expected Output | Side Effects |
+|---|----------|-----------|----------------|-------------|
+| 1 | Normal: max_output_tokens absent | `{"system_prompt": "fix", "user_input": "hello", "model": "gemini-2.5-flash", "region": "global"}` | `GenerateContentConfig` receives `max_output_tokens=512` | Gemini API called with 512 token limit |
+| 2 | Normal: max_output_tokens=2048 | `{"system_prompt": "fix", "user_input": "hello", "model": "gemini-2.5-flash", "region": "global", "max_output_tokens": 2048}` | `GenerateContentConfig` receives `max_output_tokens=2048` | Gemini API called with 2048 token limit |
+| 3 | Normal: max_output_tokens=512 (explicit) | `{..., "max_output_tokens": 512}` | `GenerateContentConfig` receives `max_output_tokens=512` | Identical to absent case |
+| 4 | Normal: max_output_tokens=8192 | `{..., "max_output_tokens": 8192}` | `GenerateContentConfig` receives `max_output_tokens=8192` | Gemini API called with 8192 token limit |
+| 5 | Edge: max_output_tokens=1 | `{..., "max_output_tokens": 1}` | `GenerateContentConfig` receives `max_output_tokens=1` | Value passed through; Gemini SDK may truncate output |
+| 6 | Error: max_output_tokens is a string | `{..., "max_output_tokens": "abc"}` | exit 1, stderr contains error message | Gemini SDK raises TypeError, caught by existing try/except |
 
-**Data Flow**: config → extract model_size/compute_type → `WhisperModel(model_size, device, compute_type)` → model
+**Data Flow**: stdin JSON → `json.loads()` → `data.get("max_output_tokens", 512)` → stored in local `max_output_tokens` variable → passed to `GenerateContentConfig(max_output_tokens=max_output_tokens)` → Gemini API call → stdout
 
-**Performance**: O(1) function call; model download on first use (~1.5GB, cached by HuggingFace Hub)
+**Implementation Detail**: The variable is read at line ~124 (after `region = data.get("region", "global")`), and used at line ~150 (replacing the hardcoded `512`).
 
----
+```python
+# Line ~124 (after existing data.get calls):
+max_output_tokens = data.get("max_output_tokens", 512)
 
-### `ModelLoader.load_model(model_id: str, device: str = DEVICE) -> tuple`
-
-**Purpose**: Unified model loader dispatch. For `model_id="faster-whisper"`, delegates to `load_faster_whisper_model`.
-
-**Preconditions**:
-- `model_id` exists in `MODEL_PRESETS`
-
-**Postconditions**:
-- Returns `(model, framework, extra_data)` tuple
-- For faster-whisper: `extra_data` is `None`
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: faster-whisper preset | `model_id="faster-whisper"` | `(WhisperModel, "faster-whisper", None)` | `load_faster_whisper_model` called with `device="cpu"` (force_cpu=True) |
-| 2 | Normal: firered-asr preset | `model_id="firered-asr"` | `(model, "fireredasr", {"use_gpu": bool})` | Unchanged existing behavior |
-| 3 | Edge: force_cpu overrides device | `model_id="faster-whisper", device="cuda:0"` | Model loaded with `device="cpu"` | Logged "forced to use CPU mode" |
-| 4 | Error: unknown model_id | `model_id="nonexistent"` | raises `ValueError("Unknown model: nonexistent")` | None |
-
-**Data Flow**: model_id → `MODEL_PRESETS[model_id]` → extract framework → dispatch to `load_faster_whisper_model` → `(model, "faster-whisper", None)`
-
-**Performance**: O(1) dispatch + model load time
-
----
-
-### `ModelInference.transcribe_faster_whisper(model: WhisperModel, audio_path: str) -> str`
-
-**Purpose**: Transcribe audio using faster-whisper. Language auto-detected (not forced) for mixed Chinese-English.
-
-**Preconditions**:
-- `model` is a valid `WhisperModel` instance
-- `audio_path` points to a valid WAV file
-
-**Postconditions**:
-- Returns concatenated text from all segments with no separator between them
-- Language is auto-detected
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: multiple segments | `model.transcribe()` returns segments with `.text` = [" Hello ", "world"] | `" Hello world"` | None |
-| 2 | Normal: single segment | `model.transcribe()` returns one segment with `.text` = "test output" | `"test output"` | None |
-| 3 | Edge: empty segments (silence) | `model.transcribe()` returns empty iterable | `""` | None |
-| 4 | Error: model.transcribe fails | model raises `RuntimeError` | raises `RuntimeError` (not caught here) | None |
-
-**Data Flow**: `model.transcribe(audio_path)` → `(segments, info)` → unpack → `"".join(segment.text for segment in segments)` → text
-
-**Performance**: O(audio_duration); ~0.1-0.3s for short audio on CPU
-
----
-
-### `ModelInference.transcribe(model, audio_path, model_id, framework, extra_data, hotwords) -> str`
-
-**Purpose**: Unified transcription interface. For `framework="faster-whisper"`, delegates to `transcribe_faster_whisper`.
-
-**Preconditions**:
-- `framework` is one of: `"funasr"`, `"transformers"`, `"glmasr"`, `"fireredasr"`, `"faster-whisper"`
-
-**Postconditions**:
-- Returns transcribed text string
-- Leading clipping trimmed via `_trim_leading_clipping` before transcription
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: faster-whisper dispatch | `framework="faster-whisper"` | Text from `transcribe_faster_whisper` | `_trim_leading_clipping` called first; temp file cleaned up |
-| 2 | Normal: fireredasr dispatch | `framework="fireredasr"` | Text from `transcribe_fireredasr` | Unchanged existing behavior |
-| 3 | Edge: extra_data ignored for faster-whisper | `framework="faster-whisper", extra_data={"foo": 1}` | Text from `transcribe_faster_whisper` | extra_data not used |
-| 4 | Error: unknown framework | `framework="unknown"` | raises `ValueError("Unknown framework: unknown")` | None |
-
-**Data Flow**: `audio_path` → `_trim_leading_clipping` → `transcribe_faster_whisper(model, trimmed_path)` → text
-
-**Performance**: O(audio_duration)
-
----
-
-## Module 2: model_presets.py — ASR Model Configuration
-
-> US-002 (already implemented). Documented for contract reference.
-
----
-
-### `MODEL_PRESETS["faster-whisper"]` (data)
-
-**Purpose**: Define static configuration for faster-whisper as a primary ASR model.
-
-**Behavior Table**:
-
-| # | Scenario | Field | Expected Value | Notes |
-|---|----------|-------|---------------|-------|
-| 1 | Normal: name | `name` | `"Faster-Whisper"` | Display name |
-| 2 | Normal: description | `description` | Contains "English" and "CPU" | Mentions English strength and CPU-only |
-| 3 | Normal: framework | `framework` | `"faster-whisper"` | Dispatch key |
-| 4 | Normal: punctuation | `punctuation` | `"builtin"` | Whisper has built-in punctuation |
-| 5 | Normal: force_cpu | `force_cpu` | `True` | Must not compete with FireRedASR for VRAM |
-| 6 | Normal: model_size | `config["model_size"]` | `"large-v3-turbo"` | Best accuracy/speed tradeoff |
-| 7 | Normal: compute_type | `config["compute_type"]` | `"int8"` | ~1.5GB RAM |
-
----
-
-## Module 3: post_processor_configs.py — Post-Processing Logic
-
----
-
-### `process_with_gemini_merge(primary_text: str, secondary_text: Optional[str], config: dict, glossary_ctx: str = "") -> str`
-
-**Purpose**: Merge two ASR transcriptions via Vertex AI Gemini SSH proxy, or polish single text in fallback mode when secondary_text is None.
-
-**Preconditions**:
-- `config` contains keys: `ssh_host`, `proxy_script`, `model`, `vertex_region`, `timeout`, `min_text_len`, `max_text_len`
-- `config` contains either `system_prompt_file` (path relative to `VOICE_INPUT_DATA_DIR`) or `system_prompt` (inline string)
-- `primary_text` is a string (may be empty)
-- `secondary_text` is a string or `None`
-
-**Postconditions**:
-- On success: returns merged/polished text from Gemini
-- On any failure: returns `primary_text` (never raises, never returns empty unless `primary_text` is empty)
-- SSH subprocess cleaned up
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: dual merge success | `primary_text="a"*50, secondary_text="b"*50, config=MERGE_CONFIG` | Stripped stdout from SSH subprocess | SSH called with JSON stdin containing `user_input="Chinese ASR: {primary}\nEnglish ASR: {secondary}"` |
-| 2 | Normal: single fallback (secondary=None) | `primary_text="a"*50, secondary_text=None, config=MERGE_CONFIG` | Stripped stdout from SSH subprocess | SSH called with JSON stdin containing `user_input="Chinese ASR: {primary}"` (no English ASR line) |
-| 3 | Normal: glossary appended | `glossary_ctx="Commonly used terms: Claude"` | Output text | `system_prompt` in JSON stdin ends with `"\n\nCommonly used terms: Claude"` |
-| 4 | Normal: no glossary | `glossary_ctx=""` | Output text | `system_prompt` in JSON stdin has no glossary suffix |
-| 5 | Edge: empty primary | `primary_text="", secondary_text="anything"` | `""` | SSH NOT called |
-| 6 | Edge: primary below min_text_len | `primary_text="short" (len<45), config with min_text_len=45` | `"short"` (original primary) | SSH NOT called; logged "below min_text_len" |
-| 7 | Edge: primary above max_text_len | `primary_text="a"*201, config with max_text_len=200` | `"a"*201` (original primary) | SSH NOT called; logged "exceeds max_text_len" |
-| 8 | Edge: primary at exactly max_text_len | `primary_text="a"*200, config with max_text_len=200` | Output from SSH | SSH IS called (200 is not > 200) |
-| 9 | Edge: primary at exactly min_text_len | `primary_text="a"*45, config with min_text_len=45` | Output from SSH | SSH IS called (45 is not < 45) |
-| 10 | Error: SSH timeout | SSH takes longer than `config["timeout"]` seconds | `primary_text` (original) | `subprocess.TimeoutExpired` caught; `notify("Votype", "Gemini merge timed out after {timeout}s", urgency="low")` called |
-| 11 | Error: SSH non-zero exit | SSH returns `returncode != 0` | `primary_text` (original) | Logged error with stderr; `notify("Votype", "Gemini merge error: {stderr[:100]}", urgency="low")` called |
-| 12 | Error: hallucination guard | `len(output) > len(primary_text) * 2` | `primary_text` (original) | Logged warning "possible hallucination" |
-| 13 | Edge: output at exactly 2x primary | `len(output) == len(primary_text) * 2` | output (accepted) | No guard triggered |
-| 14 | Error: question guard | `'？' in primary_text` and `'？' not in output` and `'?' not in output` | `primary_text` (original) | Logged warning "dropped question marks" |
-| 15 | Edge: question guard with ? (ASCII) | `'？' in primary_text` and `'?' in output` (ASCII question mark) | output (accepted) | No guard triggered — ASCII `?` satisfies guard |
-
-**Data Flow**:
-`primary_text` → length guards → load system_prompt (file or inline) → append glossary → construct user_input → JSON stdin → `subprocess.run(ssh cmd)` → strip stdout → hallucination guard → question guard → output
-
-**SSH Command Construction**:
-```
-["ssh", "-o", "ConnectTimeout=5", config["ssh_host"], "python3", config["proxy_script"]]
+# Line ~150 (in GenerateContentConfig):
+max_output_tokens=max_output_tokens,   # was: max_output_tokens=512,
 ```
 
-**JSON stdin payload**:
-```json
+**Performance**: No change. One additional `dict.get()` call — O(1).
+
+---
+
+### `vertex_proxy.print_help() -> None`
+
+**Purpose**: Print usage information including the new `max_output_tokens` field.
+
+**Preconditions**: None.
+
+**Postconditions**:
+- stdout contains help text
+- Help text includes a line documenting `max_output_tokens`
+
+**Behavior Table**:
+
+| # | Scenario | Input | Expected Output | Side Effects |
+|---|----------|-------|----------------|-------------|
+| 1 | Normal: --help flag | `python3 vertex_proxy.py --help` | stdout contains the string `"max_output_tokens"` | exit 0 |
+| 2 | Normal: help text format | `python3 vertex_proxy.py --help` | stdout contains `"max_output_tokens  Max output tokens (default: 512, optional)"` | exit 0 |
+| 3 | Edge: existing fields still present | `python3 vertex_proxy.py --help` | stdout still contains `"system_prompt"`, `"user_input"`, `"model"`, `"region"` | exit 0 |
+
+**Data Flow**: `--help` flag → `print_help()` → formatted string to stdout → `sys.exit(0)`
+
+**Implementation Detail**: Add one line after the `"region"` entry in the help text:
+
+```python
+"  max_output_tokens  Max output tokens (default: 512, optional)\n"
+```
+
+**Performance**: N/A (print only).
+
+---
+
+## US-002: post_processor_configs.py — dynamically compute and pass max_output_tokens
+
+### `post_processor_configs.process_with_vertex_ai(text: str, config: dict, glossary_ctx: str = "") -> str`
+
+**Purpose**: Call Vertex AI Gemini via SSH proxy for text polishing. Now computes and includes `max_output_tokens` in the stdin JSON payload.
+
+**Preconditions**:
+- `text` is a non-empty string with `len(text) >= config.get("min_text_len", 15)`
+- `config` dict contains `ssh_host`, `proxy_script` keys at minimum
+
+**Postconditions**:
+- The JSON sent to vertex_proxy.py via stdin includes `"max_output_tokens"` key
+- The value is `min(8192, max(512, len(user_input)))` where `user_input` is the **formatted** user text (after template application)
+- Return value is the polished text, or original `text` on any failure
+
+**Behavior Table**:
+
+| # | Scenario | text length | user_input after template | Expected max_output_tokens in JSON | Return Value |
+|---|----------|-------------|--------------------------|-----------------------------------|--------------|
+| 1 | Normal: short text (50 chars) | 50 | ~65 chars (with template) | 512 (floor applies) | polished text from Gemini |
+| 2 | Normal: medium text (1000 chars) | 1000 | ~1015 chars (with template) | 1015 | polished text from Gemini |
+| 3 | Normal: real incident case | ~2250 | ~4637 chars (merge-like) | 4637 | polished text from Gemini |
+| 4 | Edge: exact floor boundary | varies | 512 chars exactly | 512 | polished text from Gemini |
+| 5 | Edge: exact ceiling boundary | varies | 8192 chars exactly | 8192 | polished text from Gemini |
+| 6 | Edge: very long text | varies | 20000 chars | 8192 (ceiling applies) | polished text from Gemini |
+| 7 | Edge: text at min_text_len boundary (15 chars) | 15 | ~30 chars (with template) | 512 (floor applies) | polished text from Gemini |
+| 8 | Error: SSH timeout | any | any | value computed but never received | original `text` |
+| 9 | Error: vertex_proxy exit 1 + OpenRouter fails | any | any | value computed but proxy failed | original `text` |
+
+**Data Flow**: `text` → template formatting → `user_input` → `len(user_input)` → `min(8192, max(512, len(user_input)))` → `max_output_tokens` → included in `json.dumps({..., "max_output_tokens": max_output_tokens})` → SSH stdin → vertex_proxy.py
+
+**Implementation Detail**: The `max_output_tokens` variable is computed from `user_input` (the already-formatted string, NOT from raw `text`). It is added to the `json.dumps()` dict at line ~393-398.
+
+```python
+# Compute dynamic max_output_tokens from user_input length
+max_output_tokens = min(8192, max(512, len(user_input)))
+stdin_data = json.dumps({
+    "system_prompt": system_prompt,
+    "user_input": user_input,
+    "model": config.get("model", "gemini-2.5-flash"),
+    "region": config.get("vertex_region", "global"),
+    "max_output_tokens": max_output_tokens,
+}, ensure_ascii=False)
+```
+
+**Performance**: One `len()` + two `min()`/`max()` calls — O(1). No latency impact.
+
+---
+
+### `post_processor_configs.process_with_gemini_merge(primary_text: str, secondary_text: str | None, config: dict, glossary_ctx: str = "") -> str`
+
+**Purpose**: Merge two ASR transcriptions via Vertex AI Gemini. Now computes and includes `max_output_tokens` in the stdin JSON payload.
+
+**Preconditions**:
+- `primary_text` is a non-empty string with `len(primary_text) >= config.get("min_text_len", 15)`
+- `secondary_text` is a string or None
+- `config` dict contains `ssh_host`, `proxy_script` keys at minimum
+
+**Postconditions**:
+- The JSON sent to vertex_proxy.py via stdin includes `"max_output_tokens"` key
+- The value is `min(8192, max(512, len(user_input)))` where `user_input` is the **formatted** dual/single ASR string
+- Return value is the merged text, or `primary_text` on any failure
+
+**Behavior Table**:
+
+| # | Scenario | primary_text | secondary_text | user_input format | Expected max_output_tokens | Return Value |
+|---|----------|-------------|----------------|-------------------|---------------------------|--------------|
+| 1 | Normal: dual ASR, short | "hello" * 10 (50 chars) | "world" * 10 (50 chars) | `"Chinese ASR: {p}\nEnglish ASR: {s}"` → ~115 chars | 512 (floor) | merged text |
+| 2 | Normal: dual ASR, real incident | ~2250 chars | ~2373 chars | `"Chinese ASR: {p}\nEnglish ASR: {s}"` → ~4637 chars | 4637 | merged text |
+| 3 | Normal: secondary=None (single) | ~2250 chars | None | `"Chinese ASR: {p}"` → ~2264 chars | 2264 | polished text |
+| 4 | Edge: very long dual | 5000 chars | 5000 chars | ~10029 chars | 8192 (ceiling) | merged text |
+| 5 | Edge: exact floor | varies | varies | 512 chars exactly | 512 | merged text |
+| 6 | Edge: exact ceiling | varies | varies | 8192 chars exactly | 8192 | merged text |
+| 7 | Error: SSH timeout | any | any | any | value computed but proxy failed | `primary_text` |
+| 8 | Error: hallucination guard triggered | 100 chars | 100 chars | ~230 chars | 512 | `primary_text` (guard returns original) |
+
+**Data Flow**: `primary_text` + `secondary_text` → format as `"Chinese ASR: {p}\nEnglish ASR: {s}"` (or `"Chinese ASR: {p}"` if secondary=None) → `user_input` → `len(user_input)` → `min(8192, max(512, len(user_input)))` → `max_output_tokens` → included in stdin JSON
+
+**Implementation Detail**: Same pattern as `process_with_vertex_ai`. The `max_output_tokens` variable is computed from `user_input` after the dual/single format string is constructed.
+
+```python
+# Compute dynamic max_output_tokens from user_input length
+max_output_tokens = min(8192, max(512, len(user_input)))
+stdin_data = json.dumps({
+    "system_prompt": system_prompt,
+    "user_input": user_input,
+    "model": config.get("model", "gemini-2.5-flash"),
+    "region": config.get("vertex_region", "global"),
+    "max_output_tokens": max_output_tokens,
+}, ensure_ascii=False)
+```
+
+**Performance**: O(1). No latency impact.
+
+---
+
+### `post_processor_configs._run_vertex_proxy(cmd: list[str], stdin_data: str, timeout: int, max_retries: int = 1, fallback_model: str | None = None) -> subprocess.CompletedProcess`
+
+**Purpose**: Run vertex_proxy.py via subprocess with retry on 429. **No code changes needed** — this spec documents that `max_output_tokens` is preserved through retry/fallback.
+
+**Preconditions**:
+- `stdin_data` is a valid JSON string (may or may not contain `max_output_tokens`)
+- `cmd` is a valid subprocess command list
+
+**Postconditions**:
+- On 429 fallback: only `payload["model"]` is replaced; `payload["max_output_tokens"]` (if present) is preserved
+- Returns the `CompletedProcess` from the last attempt
+
+**Behavior Table**:
+
+| # | Scenario | stdin_data | Expected Behavior | Side Effects |
+|---|----------|-----------|-------------------|-------------|
+| 1 | Normal: success on first try | `{..., "max_output_tokens": 4637}` | Returns result with rc=0 | One subprocess call |
+| 2 | Normal: 429 retry succeeds | `{..., "max_output_tokens": 4637}` | Retries with same stdin_data (max_output_tokens=4637 preserved) | Two subprocess calls, 2s sleep between |
+| 3 | Normal: 429 retry + fallback | `{..., "model": "gemini-2.5-flash", "max_output_tokens": 4637}` | Fallback replaces `model` only; `max_output_tokens` stays 4637 in fallback stdin | Three subprocess calls |
+| 4 | Edge: stdin_data without max_output_tokens | `{"system_prompt": "...", "user_input": "..."}` | Works as before — no max_output_tokens to preserve | Backward compatible |
+| 5 | Error: timeout | any | raises `subprocess.TimeoutExpired` | Not retried |
+
+**Data Flow**: `stdin_data` → subprocess → on 429 → `json.loads(stdin_data)` → `payload["model"] = fallback_model` → `json.dumps(payload)` → subprocess (max_output_tokens untouched)
+
+**Performance**: No change. Existing retry behavior preserved.
+
+---
+
+## US-003: voice_input.py — remove log [:120] truncation
+
+### `voice_input.VoiceInputDaemon._post_process(self, text: str) -> str`
+
+**Purpose**: Apply post-processing to transcribed text. Log call sites at entry and exit now log full text without `[:120]` truncation.
+
+**Preconditions**:
+- `self.current_post_processor_id` is set
+- `text` is a string (may be empty)
+
+**Postconditions**:
+- Line ~1054: `_log("PP", f"input ({self.current_post_processor_id}): {text}")` logs full `text` — no `[:120]`
+- Line ~1128: `_log("PP", f"output ({elapsed:.2f}s): {result}")` logs full `result` — no `[:120]`
+- Return value unchanged (post-processed text)
+
+**Behavior Table**:
+
+| # | Scenario | text | Expected _log call at line 1054 | Expected _log call at line 1128 |
+|---|----------|------|---------------------------------|---------------------------------|
+| 1 | Normal: short text (50 chars) | `"A" * 50` | `_log("PP", "input (gemini-merge): " + "A"*50)` | `_log("PP", "output (X.XXs): " + result)` — full result |
+| 2 | Normal: long text (200 chars) | `"A" * 200` | `_log("PP", "input (gemini-merge): " + "A"*200)` — all 200 chars | `_log("PP", "output (X.XXs): " + result)` — full result |
+| 3 | Normal: very long text (2000 chars) | `"A" * 2000` | `_log("PP", "input (gemini-merge): " + "A"*2000)` — all 2000 chars | full result logged |
+| 4 | Edge: text exactly 120 chars | `"A" * 120` | `_log("PP", "input (...): " + "A"*120)` — same as before (no truncation was happening) | full result |
+| 5 | Edge: empty text | `""` | `_log("PP", "input (...): ")` | Returns early; output log may or may not be reached |
+| 6 | Error: _log fails (file I/O) | any | Silently caught by `_log`'s `except Exception: pass` | No effect on return value |
+
+**Data Flow**: `text` → `_log("PP", f"input (...): {text}")` (no `[:120]`) → ... processing ... → `result` → `_log("PP", f"output (...): {result}")` (no `[:120]`)
+
+**Implementation Detail**:
+```python
+# Line 1054 — BEFORE:
+_log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
+# Line 1054 — AFTER:
+_log("PP", f"input ({self.current_post_processor_id}): {text}")
+
+# Line 1128 — BEFORE:
+_log("PP", f"output ({elapsed:.2f}s): {result[:120]}")
+# Line 1128 — AFTER:
+_log("PP", f"output ({elapsed:.2f}s): {result}")
+```
+
+**Performance**: Log file grows slightly larger for long texts. No runtime performance impact.
+
+---
+
+### `voice_input.VoiceInputDaemon._handle_transcribe(self, msg: dict) -> None` (log sites only)
+
+**Purpose**: Handle transcription requests. Two log call sites now log full text without `[:120]` truncation.
+
+**Preconditions**:
+- `self._last_secondary_text` is set (string or None) after secondary ASR completes
+- `response["text"]` (raw_primary) is a non-empty string
+
+**Postconditions**:
+- Line ~1219: `_log("ASR-2", f"secondary: {self._last_secondary_text}")` logs full secondary text — no `[:120]`
+- Line ~1225: `_log("ASR", f"raw: {raw_primary}")` logs full raw primary text — no `[:120]`
+
+**Behavior Table**:
+
+| # | Scenario | secondary / raw_primary | Expected _log call |
+|---|----------|-------------------------|-------------------|
+| 1 | Normal: secondary 250 chars | `self._last_secondary_text = "C" * 250` | `_log("ASR-2", "secondary: " + "C"*250)` — all 250 chars |
+| 2 | Normal: raw_primary 500 chars | `raw_primary = "D" * 500` | `_log("ASR", "raw: " + "D"*500)` — all 500 chars |
+| 3 | Normal: real incident (2373 chars secondary) | `self._last_secondary_text` = 2373-char string | `_log("ASR-2", "secondary: " + full_2373_chars)` |
+| 4 | Normal: real incident (2250 chars primary) | `raw_primary` = 2250-char string | `_log("ASR", "raw: " + full_2250_chars)` |
+| 5 | Edge: text exactly 120 chars | 120-char string | Identical to before (no truncation was happening at this length) |
+| 6 | Edge: text < 120 chars | 50-char string | Identical to before |
+
+**Implementation Detail**:
+```python
+# Line 1219 — BEFORE:
+_log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
+# Line 1219 — AFTER:
+_log("ASR-2", f"secondary: {self._last_secondary_text}")
+
+# Line 1225 — BEFORE:
+_log("ASR", f"raw: {raw_primary[:120]}")
+# Line 1225 — AFTER:
+_log("ASR", f"raw: {raw_primary}")
+```
+
+**Performance**: Log file grows slightly larger. No runtime performance impact.
+
+---
+
+### Out of Scope: Line 1066 (PUNC log)
+
+Line 1066 (`_log("PUNC", f"applied punctuation: {result[:120]}")`) is **NOT** modified by this PRD. Tests should verify this line **still has** `[:120]` truncation.
+
+---
+
+## Helper: max_output_tokens formula
+
+This is **NOT** a separate function in the codebase — the formula is inlined at each call site in `process_with_vertex_ai()` and `process_with_gemini_merge()`. Documented here for test writers.
+
+### `compute_max_output_tokens(user_input: str) -> int` (conceptual)
+
+**Purpose**: Compute dynamic max_output_tokens budget from user_input character length.
+
+**Formula**: `min(8192, max(512, len(user_input)))`
+
+**Behavior Table**:
+
+| # | Scenario | len(user_input) | Expected Result | Rationale |
+|---|----------|----------------|-----------------|-----------|
+| 1 | Normal: medium text | 2000 | 2000 | Pass-through: output budget = input length |
+| 2 | Normal: real incident | 4637 | 4637 | Exact incident case from CSV evidence |
+| 3 | Edge: floor boundary exact | 512 | 512 | Floor matches exactly |
+| 4 | Edge: below floor | 50 | 512 | Floor applied |
+| 5 | Edge: below floor (1 char) | 1 | 512 | Floor applied |
+| 6 | Edge: ceiling boundary exact | 8192 | 8192 | Ceiling matches exactly |
+| 7 | Edge: above ceiling | 20000 | 8192 | Ceiling applied |
+| 8 | Edge: just above floor | 513 | 513 | Pass-through |
+| 9 | Edge: just below ceiling | 8191 | 8191 | Pass-through |
+| 10 | Edge: empty string | 0 | 512 | Floor applied (though this path won't be reached — empty text returns early) |
+
+**Performance**: O(1).
+
+---
+
+## Cross-Module Contract: stdin JSON Schema
+
+The JSON sent from `post_processor_configs.py` to `vertex_proxy.py` via SSH stdin has this schema after all changes:
+
+```python
 {
-  "system_prompt": "<loaded prompt + optional glossary>",
-  "user_input": "Chinese ASR: {primary_text}\nEnglish ASR: {secondary_text}",
-  "model": "<config['model'] or 'gemini-2.5-flash'>",
-  "region": "<config['vertex_region'] or 'us-central1'>"
+    "system_prompt": str,        # System instruction for Gemini (required)
+    "user_input": str,           # User text to process (required, non-empty)
+    "model": str,                # Gemini model name (default "gemini-2.5-flash")
+    "region": str,               # Vertex AI region (default "global")
+    "max_output_tokens": int,    # NEW: max output tokens (computed by caller)
 }
 ```
-When `secondary_text is None`, `user_input` is `"Chinese ASR: {primary_text}"` only.
 
-**Performance**: ~5.5-6.5s (network-bound: SSH + Vertex AI Gemini inference)
-
----
-
-### `PostProcessorLoader.load_post_processor(preset_id: str) -> Optional[Any]`
-
-**Purpose**: Load a post-processor by preset ID. Extended to handle `framework="vertex-ai-merge"`.
-
-**Preconditions**:
-- `preset_id` is a string
-
-**Postconditions**:
-- Returns loaded model, or `None` for frameworks that don't need a local model
-- For `vertex-ai-merge`: returns `None`
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: gemini-merge | `preset_id="gemini-merge"` | `None` | None |
-| 2 | Normal: gemini-fix | `preset_id="gemini-fix"` | `None` | None |
-| 3 | Normal: none | `preset_id="none"` | `None` | None |
-| 4 | Normal: haiku-fix | `preset_id="haiku-fix"` | `None` | None |
-| 5 | Normal: llama-cpp model | `preset_id="chinese-text-correction"` | `Llama` instance | Model loaded from GGUF file |
-| 6 | Error: unknown preset | `preset_id="nonexistent"` | raises `ValueError("Unknown post-processor: nonexistent")` | None |
-| 7 | Error: unknown framework | Preset with `framework="unknown"` | raises `ValueError("Unknown post-processor framework: unknown")` | None |
-
-**Data Flow**: `preset_id` → lookup in `POST_PROCESSOR_PRESETS` → extract `framework` → dispatch → return model or None
-
-**Performance**: O(1) for None-returning frameworks
+**Contract**:
+- Sender (`post_processor_configs.py`): MUST include `max_output_tokens` computed as `min(8192, max(512, len(user_input)))`
+- Receiver (`vertex_proxy.py`): MUST read via `data.get("max_output_tokens", 512)` — defaults to 512 when absent for backward compatibility
+- Intermediary (`_run_vertex_proxy` fallback): MUST NOT modify `max_output_tokens` when replacing `model` for fallback
 
 ---
 
-## Module 4: post_processor_presets.py — Post-Processor Configuration
-
-> US-005 (already implemented). Documented for contract reference.
-
----
-
-### `POST_PROCESSOR_PRESETS["gemini-merge"]` (data)
-
-**Purpose**: Define static configuration for the gemini-merge post-processor preset.
-
-**Behavior Table**:
-
-| # | Scenario | Field | Expected Value | Notes |
-|---|----------|-------|---------------|-------|
-| 1 | Normal: name | `name` | `"Gemini Merge (Dual ASR)"` | Display name |
-| 2 | Normal: description | `description` | Contains "FireRedASR" and "faster-whisper" | Describes merge behavior |
-| 3 | Normal: framework | `framework` | `"vertex-ai-merge"` | Distinct from `"vertex-ai"` |
-| 4 | Normal: ssh_host | `config["ssh_host"]` | `"oracle-cloud"` | Same as gemini-fix |
-| 5 | Normal: proxy_script | `config["proxy_script"]` | `"~/vertex_proxy.py"` | Same as gemini-fix |
-| 6 | Normal: model | `config["model"]` | `"gemini-2.5-flash"` | Same as gemini-fix |
-| 7 | Normal: vertex_region | `config["vertex_region"]` | `"us-central1"` | Same as gemini-fix |
-| 8 | Normal: timeout | `config["timeout"]` | `15` | Seconds |
-| 9 | Normal: min_text_len | `config["min_text_len"]` | `45` | Same as gemini-fix |
-| 10 | Normal: max_text_len | `config["max_text_len"]` | `200` | Same as gemini-fix |
-| 11 | Normal: vocab_min_count | `config["vocab_min_count"]` | `3` | Same as gemini-fix |
-| 12 | Normal: system_prompt_file | `config["system_prompt_file"]` | `"prompts/gemini-merge-system.txt"` | Merge-specific prompt |
-| 13 | Edge: no user_prompt_template_file | `config` | Key absent | Merge constructs user_input directly, unlike gemini-fix |
-
----
-
-## Module 5: voice_input.py :: ASRDaemon — Daemon Core
-
----
-
-### `ASRDaemon.__init__(self, model_id: Optional[str] = None) -> None`
-
-**Purpose**: Initialize daemon state, including secondary model attributes.
-
-**Preconditions**:
-- None (constructor)
-
-**Postconditions**:
-- `self._secondary_model` is `None`
-- `self._last_secondary_text` is `None`
-- All other instance attributes initialized as per existing behavior
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: default init | `model_id=None` | Instance with all attrs set | `_secondary_model=None, _last_secondary_text=None` |
-| 2 | Normal: explicit model | `model_id="firered-asr"` | Instance with `current_model_id="firered-asr"` | Same secondary attrs |
-
-**Data Flow**: `model_id` → set defaults → `_restore_post_processor_id()` → instance ready
-
-**Performance**: O(1)
-
----
-
-### `ASRDaemon._load_secondary_model(self) -> None`
-
-**Purpose**: Load faster-whisper as secondary ASR model for dual fusion. Non-fatal: all failures caught.
-
-**Preconditions**:
-- Called from `load_post_processor` when framework is `"vertex-ai-merge"`
-
-**Postconditions**:
-- `self._secondary_model` is either a `WhisperModel` instance or `None`
-- Never raises an exception
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: successful load | faster-whisper installed, model available | `self._secondary_model = WhisperModel(...)` | Logged info "faster-whisper loaded successfully"; `WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")` called |
-| 2 | Error: package not installed | `import faster_whisper` raises `ImportError` | `self._secondary_model = None` | Logged warning containing "faster-whisper not installed" and "pip install faster-whisper" |
-| 3 | Error: model load fails | `WhisperModel()` constructor raises any `Exception` | `self._secondary_model = None` | Logged warning "Failed to load secondary ASR model: {e}" |
-
-**Data Flow**: `import WhisperModel` → `WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")` → assign to `self._secondary_model`
-
-**Performance**: First call downloads ~1.5GB model; subsequent calls use cached model
-
----
-
-### `ASRDaemon._unload_secondary_model(self) -> None`
-
-**Purpose**: Unload secondary ASR model to free ~1.5GB RAM.
-
-**Preconditions**:
-- None (safe to call even if no secondary model loaded)
-
-**Postconditions**:
-- `self._secondary_model` is `None`
-- `self._last_secondary_text` is `None`
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: model loaded | `self._secondary_model` is a WhisperModel | None returned | `_secondary_model=None, _last_secondary_text=None`; logged "unloaded secondary ASR model" |
-| 2 | Edge: no model loaded | `self._secondary_model` is `None` | None returned | No-op (no log, no state change) |
-| 3 | Edge: attr missing (__new__ construction) | `self` has no `_secondary_model` attr | None returned | No-op — uses `getattr(self, '_secondary_model', None)` |
-
-**Data Flow**: check `_secondary_model is not None` → set both to `None` → log
-
-**Performance**: O(1)
-
----
-
-### `ASRDaemon.load_post_processor(self, preset_id: Optional[str] = None) -> None`
-
-**Purpose**: Load a post-processor. Manages secondary model lifecycle: loads for `vertex-ai-merge`, unloads otherwise.
-
-**Preconditions**:
-- `preset_id` exists in `POST_PROCESSOR_PRESETS` (or is `None` to use current)
-
-**Postconditions**:
-- `self.current_post_processor_id` updated
-- `self.post_processor_framework` updated
-- Post-processor ID persisted to state file
-- If framework is `"vertex-ai-merge"`: vocab loaded AND `_load_secondary_model()` called
-- If framework is NOT `"vertex-ai-merge"`: `_unload_secondary_model()` called
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: switch to gemini-merge | `preset_id="gemini-merge"` | None | `PostProcessorLoader.load_post_processor("gemini-merge")` called; vocab loaded; `_load_secondary_model()` called; ID persisted |
-| 2 | Normal: switch to gemini-fix | `preset_id="gemini-fix"` | None | `_unload_secondary_model()` called; vocab loaded |
-| 3 | Normal: switch to none | `preset_id="none"` | None | `_unload_secondary_model()` called; no vocab loaded |
-| 4 | Normal: switch from gemini-merge to haiku-fix | Previous framework was `vertex-ai-merge` | None | `_unload_secondary_model()` called; secondary model freed |
-| 5 | Edge: load gemini-merge but faster-whisper unavailable | ImportError in `_load_secondary_model` | None | `_secondary_model=None`; fusion silently disabled; still uses gemini-merge preset |
-| 6 | Error: unknown preset | `preset_id="nonexistent"` | raises `RuntimeError("Unknown post-processor: nonexistent")` | No state changed |
-| 7 | Error: loader exception | `PostProcessorLoader.load_post_processor` raises | None (caught) | Falls back to regex-only: `current_post_processor_id="none"`, `post_processor_framework="regex"`; `_unload_secondary_model()` called |
-
-**Data Flow**: `preset_id` → validate → `PostProcessorLoader.load_post_processor()` → set framework → conditionally load vocab → conditionally load/unload secondary model → persist ID
-
-**Performance**: O(1) for non-model frameworks; secondary model load adds ~5-30s on first use
-
----
-
-### `ASRDaemon._handle_transcribe(self, msg: Dict[str, str]) -> Dict[str, str]`
-
-**Purpose**: Handle transcription request. Runs primary ASR, then optionally runs secondary ASR when model is available.
-
-**Preconditions**:
-- `msg` is a dict with `"data"` key containing audio file path
-- Primary model is loaded (`self.model is not None`)
-
-**Postconditions**:
-- `self._last_secondary_text` is updated: set to transcription result, or `None` on failure/unavailability
-- Returns `{"text": str}` on success or `{"error": str}` on primary failure
-- Status set to `"processing"` at start
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: primary only (no secondary model) | `msg={"data": "/tmp/audio.wav"}, self._secondary_model=None` | `{"text": "post-processed text"}` | `_last_secondary_text` reset to `None`; `_post_process()` called |
-| 2 | Normal: dual ASR (secondary available) | `msg={"data": "/tmp/audio.wav"}, self._secondary_model=WhisperModel` | `{"text": "post-processed text"}` | Secondary starts in background Thread before primary; result collected after join(timeout=30); `_last_secondary_text` set to secondary transcription; `_post_process()` called |
-| 3 | Edge: secondary transcription fails | `_run_secondary` thread catches Exception | `{"text": "post-processed text"}` (primary still works) | `result["error"]` set in thread; `_last_secondary_text=None`; warning logged "Secondary ASR failed: {e}" |
-| 4 | Error: primary ASR fails | `self.transcribe()` returns `{"error": "..."}` | `{"error": "..."}` | Secondary may have started in parallel; result discarded; `_last_secondary_text = None` |
-| 5 | Edge: secondary transcription produces text | Secondary returns segments with text | `{"text": ...}` | `_last_secondary_text` = joined segment text; logged "secondary: {text[:120]}" |
-| 6 | Edge: secondary thread timeout (>30s) | `secondary_thread.is_alive()` after `join(timeout=30)` | `{"text": "post-processed text"}` | `_last_secondary_text = None`; warning logged "Secondary ASR timed out after 30s" |
-| 7 | Edge: stale data reset | Any call, even without secondary model | `{"text": ...}` or `{"error": ...}` | `_last_secondary_text = None` at start of every call |
-
-**Data Flow**:
-```
-set_status("processing")
-  → _last_secondary_text = None (stale data reset)
-  → if _secondary_model exists: start background Thread(_run_secondary)
-  → self.transcribe(audio_path) → primary response  (main thread, GPU)
-  → if secondary_thread: join(timeout=30), collect result
-      → primary empty/failed → discard secondary
-      → thread alive → timeout warning
-      → result["error"] → secondary failed
-      → result["text"] → assign _last_secondary_text
-  → _post_process(primary_text) → final text
-  → {"text": final_text}
-```
-
-**Secondary ASR call pattern** (in background thread `_run_secondary`, NOT via `ModelInference.transcribe_faster_whisper`):
-```python
-def _run_secondary(model, path, result):
-    segments, _info = model.transcribe(path)
-    result["text"] = "".join(seg.text for seg in segments)
-```
-
-**Performance**: max(Primary ASR, ~0.1-0.3s secondary ASR) + post-process time (parallel reduces wall-clock by 0.1-2s)
-
----
-
-### `ASRDaemon._post_process(self, text: str) -> str`
-
-**Purpose**: Multi-stage post-processing pipeline. Extended with `vertex-ai-merge` dispatch for dual ASR fusion.
-
-**Preconditions**:
-- `text` is a raw ASR transcription string
-- `self.post_processor_framework` is set
-- For `vertex-ai-merge`: `self._last_secondary_text` has been set by `_handle_transcribe`
-
-**Postconditions**:
-- Returns fully processed text
-- Vocab updated if LLM changed the text (for ssh-claude, vertex-ai, vertex-ai-merge)
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: vertex-ai-merge with secondary text | `text="raw", framework="vertex-ai-merge", _last_secondary_text="whisper output"` | Merged text from Gemini | `process_with_gemini_merge(vocab_applied, "whisper output", config, glossary_ctx)` called |
-| 2 | Normal: vertex-ai-merge without secondary (None) | `text="raw", framework="vertex-ai-merge", _last_secondary_text=None` | Polished text from Gemini (fallback) | `process_with_gemini_merge(vocab_applied, None, config, glossary_ctx)` called |
-| 3 | Normal: vertex-ai (gemini-fix) | `text="raw", framework="vertex-ai"` | Polished text | `process_with_vertex_ai(vocab_applied, config, glossary_ctx)` called |
-| 4 | Normal: ssh-claude (haiku-fix) | `text="raw", framework="ssh-claude"` | Polished text | `process_with_ssh_claude(vocab_applied, config, glossary_ctx)` called |
-| 5 | Normal: regex only | `text="raw", framework="regex"` | Filler-removed text | Only `remove_fillers` applied (+ punc if punc_model) |
-| 6 | Edge: LLM changed text → vocab updated | Before-polish differs from result | Processed text | `diff_to_vocab()` called; `save_vocab()` called; `load_vocab()` called to refresh |
-| 7 | Edge: LLM returned same text → no vocab update | Before-polish equals result | Same text | `diff_to_vocab` NOT called |
-
-**Pipeline for `vertex-ai-merge`**:
-```
-text
-  → remove_fillers(text) → defillered
-  → process_with_firered_punc(punc_model, defillered) → punctuated  (if punc_model)
-  → apply_vocab(punctuated, vocab, min_count) → vocab_applied
-  → process_with_gemini_merge(
-        primary_text=vocab_applied,
-        secondary_text=self._last_secondary_text,
-        config=preset["config"],
-        glossary_ctx=glossary_context(vocab)
-    ) → merged
-  → diff_to_vocab(vocab_applied, merged) → updated vocab  (if changed)
-  → save_vocab(updated_vocab)  (if changed)
-  → load_vocab() → refresh self._vocab  (if changed)
-  → return merged
-```
-
-**Key difference from vertex-ai/ssh-claude dispatch**:
-- `vertex-ai-merge` is dispatched via a separate `elif` branch (not the existing dispatch dict) because it has a 4-argument signature vs the 3-argument signature of `process_with_vertex_ai`/`process_with_ssh_claude`
-- The secondary text is retrieved from `self._last_secondary_text` using `getattr(self, '_last_secondary_text', None)` for safety
-
-**Performance**: Filler removal O(n), punc O(n), vocab O(n*v), Gemini ~5.5-6.5s, vocab diff O(n)
-
----
-
-## Module 6: prompts/gemini-merge-system.txt — Merge Prompt
-
-> US-004 (already implemented). Documented for contract reference.
-
----
-
-### Prompt Content Contract
-
-**Purpose**: Dual-purpose system prompt for Gemini: merge two ASR transcriptions or polish a single transcription.
-
-**Behavior Table**:
-
-| # | Scenario | Input Format | Expected Behavior | Notes |
-|---|----------|-------------|-------------------|-------|
-| 1 | Dual input: merge | `"Chinese ASR: ...\nEnglish ASR: ..."` | Merge Chinese text structure with English proper nouns/terms | Chinese ASR authoritative for Chinese, English ASR authoritative for English terms |
-| 2 | Single input: polish | `"Chinese ASR: ..."` only | Clean up text as editor (remove fillers, fix errors, punctuate) | Matches gemini-fix behavior |
-| 3 | CS domain context | Any input | Prioritize software engineering terminology | Same domain as gemini-fix-system.txt |
-| 4 | Editor identity | Question-like input | Edit the text, do NOT answer the question | "你是编辑器，不是助手" |
-| 5 | Output format | Any input | Clean text only, no labels, no explanations | No "Chinese ASR:" prefix in output |
-| 6 | Filler removal | Input with 呃/嗯/就是说 | Remove fillers | Same rules as gemini-fix |
-| 7 | CJK-English spacing | Mixed text | Add space between CJK and English/numbers | "使用Python" → "使用 Python" |
-| 8 | Official capitalization | English terms | Strict official case | "github" → "GitHub", "vscode" → "VS Code" |
-
----
-
-## Existing Functions (referenced, specs for test contract)
-
-These existing functions are unchanged but referenced in the pipeline. Specs included for Unit-Test agent to verify integration.
-
----
-
-### `PostProcessorInference.remove_fillers(text: str) -> str`
-
-**Purpose**: Remove Chinese and English filler words via regex.
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: Chinese fillers | `"呃嗯就是说你好"` | `"你好"` | None |
-| 2 | Normal: English fillers | `"Um like hello"` | `"hello"` | None |
-| 3 | Edge: empty text | `""` | `""` | None |
-| 4 | Edge: no fillers | `"纯净文本"` | `"纯净文本"` | None |
-
----
-
-### `apply_vocab(text: str, vocab: dict, min_count: int) -> str`
-
-**Purpose**: Replace known ASR error variants with correct terms.
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: Chinese variant | `text="克劳的", vocab={"Claude": {"variants": {"克劳的": 5}}}, min_count=3` | `"Claude"` | None |
-| 2 | Edge: count below threshold | `text="克劳的", vocab={"Claude": {"variants": {"克劳的": 2}}}, min_count=3` | `"克劳的"` (unchanged) | None |
-| 3 | Edge: empty vocab | `text="anything", vocab={}, min_count=3` | `"anything"` | None |
-| 4 | Edge: empty text | `text="", vocab={"a": {"variants": {"b": 5}}}, min_count=1` | `""` | None |
-
----
-
-### `glossary_context(vocab: dict) -> str`
-
-**Purpose**: Generate glossary context string for LLM prompts.
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: vocab with terms | `{"Claude": {...}, "Python": {...}}` | `"Commonly used terms: Claude, Python"` | None |
-| 2 | Edge: empty vocab | `{}` | `""` | None |
-
----
-
-### `diff_to_vocab(original: str, polished: str, vocab: dict) -> dict`
-
-**Purpose**: Extract word-level replacements and accumulate in vocab (immutable — returns new dict).
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: replacement found | `original="克劳的很好", polished="Claude很好"` | New vocab with `"Claude": {"variants": {"克劳的": 1}}` | None |
-| 2 | Edge: no change | `original="same", polished="same"` | Deep copy of input vocab | None |
-| 3 | Edge: single-char replacement skipped | Single CJK char replaced | Input vocab unchanged (skip) | None |
-
----
-
-### `save_vocab(vocab: dict, vocab_path: Optional[str] = None) -> None`
-
-**Purpose**: Save vocab atomically, merging with on-disk data.
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: merge and save | Vocab dict | None | Reads disk vocab, merges (max counts), writes via .tmp rename |
-| 2 | Edge: no existing file | Vocab dict, path doesn't exist | None | Creates new file |
-
----
-
-### `load_vocab(vocab_path: Optional[str] = None) -> dict`
-
-**Purpose**: Load glossary vocab from JSON file.
-
-**Behavior Table**:
-
-| # | Scenario | Input | Expected Output | Side Effects |
-|---|----------|-------|-----------------|--------------|
-| 1 | Normal: valid file | Existing vocab.json | Parsed dict | None |
-| 2 | Edge: missing file | Non-existent path | `{}` | None |
-| 3 | Edge: invalid JSON | Malformed file | `{}` | None |
-
----
-
-## Error Message Contract
-
-These exact error messages are used in the codebase. Unit tests MUST assert on these strings.
-
-| Function | Error Condition | Error Class | Exact Message Pattern |
-|----------|----------------|-------------|----------------------|
-| `ModelLoader.load_faster_whisper_model` | Package not installed | `ImportError` | `"faster-whisper is not installed. Install it with: pip install faster-whisper"` |
-| `ModelLoader.load_model` | Unknown model_id | `ValueError` | `"Unknown model: {model_id}"` |
-| `ModelLoader.load_model` | Unknown framework | `ValueError` | `"Unknown framework: {framework}"` |
-| `PostProcessorLoader.load_post_processor` | Unknown preset_id | `ValueError` | `"Unknown post-processor: {preset_id}"` |
-| `PostProcessorLoader.load_post_processor` | Unknown framework | `ValueError` | `"Unknown post-processor framework: {framework}"` |
-| `ASRDaemon.load_post_processor` | Unknown preset | `RuntimeError` | `"Unknown post-processor: {preset_id}"` |
-
----
-
-## Log Message Contract
-
-These log messages are used in the codebase for observable side effects in tests.
-
-| Function | Level | Message Pattern |
-|----------|-------|----------------|
-| `_load_secondary_model` (import fail) | `WARNING` | `"faster-whisper not installed, secondary ASR unavailable..."` |
-| `_load_secondary_model` (load fail) | `WARNING` | `"Failed to load secondary ASR model: {e}"` |
-| `_load_secondary_model` (success) | `INFO` | `"Loading secondary ASR model (faster-whisper large-v3-turbo, CPU, int8)..."` |
-| `_handle_transcribe` (secondary fail) | `WARNING` | `"Secondary ASR failed: {e}"` |
-| `process_with_gemini_merge` (timeout) | `WARNING` | `"Gemini merge timed out after {timeout}s"` |
-| `process_with_gemini_merge` (SSH fail) | `ERROR` | `"Gemini merge failed (exit {returncode}): {stderr}"` |
-| `process_with_gemini_merge` (hallucination) | `WARNING` | `"Gemini merge output too long ({len_out} vs input {len_in}), possible hallucination, using original text"` |
-| `process_with_gemini_merge` (question) | `WARNING` | `"Gemini merge dropped question marks — likely answered instead of editing, using original text"` |
-| `process_with_gemini_merge` (min_len skip) | `INFO` | `"Text length {len} below min_text_len {min}, skipping merge"` |
-| `process_with_gemini_merge` (max_len skip) | `INFO` | `"Text length {len} exceeds max_text_len {max}, skipping merge"` |
-
----
-
-## Test Configuration Constants
-
-Tests should use these constants to avoid dependency on real prompt files and SSH.
-
-```python
-# For process_with_gemini_merge tests
-MERGE_CONFIG = {
-    "ssh_host": "oracle-cloud",
-    "proxy_script": "~/vertex_proxy.py",
-    "model": "gemini-2.5-flash",
-    "vertex_region": "us-central1",
-    "timeout": 15,
-    "min_text_len": 45,
-    "max_text_len": 200,
-    "vocab_min_count": 3,
-    "system_prompt": "You are a merge editor.",  # Inline — avoids file I/O in tests
-}
-
-# For ASRDaemon tests (bypass __init__ pattern from test_vertex_ai.py)
-def _make_daemon():
-    """Create minimal ASRDaemon for testing."""
-    with patch("voice_input.ModelLoader"), \
-         patch("voice_input.get_current_model", return_value="firered-asr"):
-        from voice_input import ASRDaemon
-        daemon = ASRDaemon.__new__(ASRDaemon)
-        daemon.model = None
-        daemon.framework = None
-        daemon.extra_data = None
-        daemon.current_model_id = "firered-asr"
-        daemon.running = False
-        daemon.indicator = None
-        daemon.gtk_thread = None
-        daemon.post_processor_model = None
-        daemon.current_post_processor_id = "none"
-        daemon.post_processor_framework = "regex"
-        daemon.punc_model = None
-        daemon._vocab = {}
-        daemon._secondary_model = None
-        daemon._last_secondary_text = None
-        return daemon
-```
-
----
-
-## Mock Patterns
-
-### Mocking subprocess for gemini-merge
-```python
-@patch("post_processor_configs.subprocess.run")
-def test_example(self, mock_run):
-    mock_run.return_value = MagicMock(returncode=0, stdout="merged text", stderr="")
-    # ...
-```
-
-### Mocking notify (lazy import from voice_input)
-```python
-@patch("voice_input.notify")
-@patch("post_processor_configs.subprocess.run")
-def test_example(self, mock_run, mock_notify):
-    # ...
-```
-
-### Mocking WhisperModel for secondary model
-```python
-@patch("voice_input.WhisperModel")  # NOT valid — import is inside method
-# Instead, mock the import mechanism:
-with patch.dict("sys.modules", {"faster_whisper": MagicMock()}):
-    # or
-with patch("builtins.__import__", side_effect=ImportError):
-    # ...
-```
-
-Note: `_load_secondary_model` imports `WhisperModel` inside the method body (`from faster_whisper import WhisperModel`). To mock it, patch `faster_whisper.WhisperModel` after ensuring the module is in `sys.modules`, or use `patch.dict("sys.modules", ...)`.
+## Existing Functions — No Changes (for reference)
+
+The following functions are NOT modified by this PRD. Listed for completeness so the Unit-Test agent knows they are out of scope:
+
+- `post_processor_configs.process_with_ssh_claude()` — uses SSH+Claude, not vertex_proxy.py
+- `post_processor_configs.load_vocab()` — vocab I/O
+- `post_processor_configs.apply_vocab()` — regex replacement
+- `post_processor_configs.glossary_context()` — prompt context generation
+- `post_processor_configs.diff_to_vocab()` — vocab accumulation
+- `post_processor_configs.save_vocab()` — vocab persistence
+- `post_processor_configs.PostProcessorLoader` — model loading
+- `post_processor_configs.PostProcessorInference` — regex/LLM inference
+- `openrouter_client.call_openrouter()` — OpenRouter fallback (does NOT receive max_output_tokens; uses its own defaults)
+- `voice_input._log()` — the function itself is unchanged; only its **call sites** are modified
+- `voice_input._log_csv()` — CSV training data logging, unchanged
