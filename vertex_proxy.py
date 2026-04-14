@@ -64,6 +64,7 @@ def print_help():
         "  user_input     User text to process\n"
         "  model          Gemini model name (default: gemini-2.5-flash)\n"
         "  region         Vertex AI region (default: global)\n"
+        "  max_output_tokens  Max output tokens (default: 512, optional)\n"
         "\n"
         "Stdout: corrected text (plain text, no JSON wrapping)\n"
         "Exit 0 = success, exit 1 = failure (stderr has error message)"
@@ -121,6 +122,7 @@ def main():
     user_input = data.get("user_input", "")
     model = data.get("model", "gemini-2.5-flash")
     region = data.get("region", "global")
+    max_output_tokens = data.get("max_output_tokens", 512)
 
     if not user_input:
         print("Missing 'user_input' in JSON", file=sys.stderr)
@@ -147,7 +149,7 @@ def main():
         system_instruction=system_prompt,
         thinking_config=ThinkingConfig(thinking_budget=0),
         temperature=0.3,
-        max_output_tokens=512,
+        max_output_tokens=max_output_tokens,
     )
 
     t_api = time.time()

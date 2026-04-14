@@ -1051,7 +1051,7 @@ class ASRDaemon:
                   -> vocab accumulation (ssh-claude/vertex-ai) -> LLM refinement (llama-cpp).
         """
         import time
-        _log("PP", f"input ({self.current_post_processor_id}): {text[:120]}")
+        _log("PP", f"input ({self.current_post_processor_id}): {text}")
         t0 = time.time()
 
         # Step 1: Always remove fillers (regex)
@@ -1125,7 +1125,7 @@ class ASRDaemon:
                         logging.error(f"LLM post-processing failed: {e}")
 
         elapsed = time.time() - t0
-        _log("PP", f"output ({elapsed:.2f}s): {result[:120]}")
+        _log("PP", f"output ({elapsed:.2f}s): {result}")
         return result
 
     def transcribe(self, audio_path):
@@ -1216,13 +1216,13 @@ class ASRDaemon:
                 self._last_secondary_text = None
             elif "text" in secondary_result:
                 self._last_secondary_text = secondary_result["text"]
-                _log("ASR-2", f"secondary: {self._last_secondary_text[:120]}")
+                _log("ASR-2", f"secondary: {self._last_secondary_text}")
             else:
                 self._last_secondary_text = None
 
         if response and "text" in response and response["text"]:
             raw_primary = response["text"]
-            _log("ASR", f"raw: {raw_primary[:120]}")
+            _log("ASR", f"raw: {raw_primary}")
             response["text"] = self._post_process(raw_primary)
 
             # Log training data: raw ASR outputs + polished result

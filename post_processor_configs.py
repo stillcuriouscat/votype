@@ -389,41 +389,51 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
         "python3", config["proxy_script"],
     ]
 
+    # Compute dynamic max_output_tokens from user_input length
+    max_output_tokens = min(8192, max(512, len(user_input)))
+
     # JSON stdin avoids all shell escaping issues (Chinese text + long prompts)
     stdin_data = json.dumps({
         "system_prompt": system_prompt,
         "user_input": user_input,
         "model": config.get("model", "gemini-2.5-flash"),
         "region": config.get("vertex_region", "global"),
+        "max_output_tokens": max_output_tokens,
     }, ensure_ascii=False)
 
     timeout = config.get("timeout", 15)
 
     fallback_model = config.get("fallback_model", None)
 
+    output = None
     try:
         result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=fallback_model)
+        if result.returncode == 0:
+            output = result.stdout.strip()
+        else:
+            stderr = result.stderr.strip() if result.stderr else "unknown error"
+            logging.error(f"Vertex AI failed (exit {result.returncode}): {stderr}")
     except subprocess.TimeoutExpired:
         logging.warning(f"Vertex AI timed out after {timeout}s")
-        from voice_input import notify
-        notify("Votype", f"Vertex AI timed out after {timeout}s", urgency="low")
-        return text
 
-    if result.returncode != 0:
-        stderr = result.stderr.strip() if result.stderr else "unknown error"
-        logging.error(f"Vertex AI failed (exit {result.returncode}): {stderr}")
-        from voice_input import notify
-        notify("Votype", f"Vertex AI error: {stderr[:100]}", urgency="low")
-        return text
-
-    output = result.stdout.strip()
+    # OpenRouter fallback when Vertex AI failed
+    if not output:
+        from openrouter_client import call_openrouter
+        or_result = call_openrouter(system_prompt, user_input, timeout=timeout)
+        if or_result is not None:
+            output = or_result
+            logging.info("[OPENROUTER] fallback success for gemini-fix: %d chars", len(output))
+        else:
+            from voice_input import notify
+            notify("Votype", "Vertex AI + OpenRouter both failed", urgency="low")
+            return text
 
     # Hallucination guard: editor output should not be much longer than input.
     # Legitimate edits add punctuation/spaces but remove fillers → roughly same length.
     # If output > 2x input, LLM likely "replied" instead of editing.
     if len(output) > len(text) * 2:
         logging.warning(
-            f"Vertex AI output too long ({len(output)} vs input {len(text)}), "
+            f"LLM output too long ({len(output)} vs input {len(text)}), "
             "possible hallucination, using original text"
         )
         return text
@@ -432,7 +442,7 @@ def process_with_vertex_ai(text, config, glossary_ctx=""):
     # the LLM likely answered the question instead of editing it.
     if '？' in text and '？' not in output and '?' not in output:
         logging.warning(
-            "Vertex AI dropped question marks — likely answered instead of editing, "
+            "LLM dropped question marks — likely answered instead of editing, "
             "using original text"
         )
         return text
@@ -505,38 +515,48 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
         "python3", config["proxy_script"],
     ]
 
+    # Compute dynamic max_output_tokens from user_input length
+    max_output_tokens = min(8192, max(512, len(user_input)))
+
     # JSON stdin avoids all shell escaping issues
     stdin_data = json.dumps({
         "system_prompt": system_prompt,
         "user_input": user_input,
         "model": config.get("model", "gemini-2.5-flash"),
         "region": config.get("vertex_region", "global"),
+        "max_output_tokens": max_output_tokens,
     }, ensure_ascii=False)
 
     timeout = config.get("timeout", 15)
     fallback_model = config.get("fallback_model", None)
 
+    output = None
     try:
         result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=fallback_model)
+        if result.returncode == 0:
+            output = result.stdout.strip()
+        else:
+            stderr = result.stderr.strip() if result.stderr else "unknown error"
+            logging.error(f"Gemini merge failed (exit {result.returncode}): {stderr}")
     except subprocess.TimeoutExpired:
         logging.warning(f"Gemini merge timed out after {timeout}s")
-        from voice_input import notify
-        notify("Votype", f"Gemini merge timed out after {timeout}s", urgency="low")
-        return primary_text
 
-    if result.returncode != 0:
-        stderr = result.stderr.strip() if result.stderr else "unknown error"
-        logging.error(f"Gemini merge failed (exit {result.returncode}): {stderr}")
-        from voice_input import notify
-        notify("Votype", f"Gemini merge error: {stderr[:100]}", urgency="low")
-        return primary_text
-
-    output = result.stdout.strip()
+    # OpenRouter fallback when Vertex AI failed
+    if not output:
+        from openrouter_client import call_openrouter
+        or_result = call_openrouter(system_prompt, user_input, timeout=timeout)
+        if or_result is not None:
+            output = or_result
+            logging.info("[OPENROUTER] fallback success for gemini-merge: %d chars", len(output))
+        else:
+            from voice_input import notify
+            notify("Votype", "Gemini merge + OpenRouter both failed", urgency="low")
+            return primary_text
 
     # Hallucination guard: output should not be much longer than input
     if len(output) > len(primary_text) * 2:
         logging.warning(
-            f"Gemini merge output too long ({len(output)} vs input {len(primary_text)}), "
+            f"LLM output too long ({len(output)} vs input {len(primary_text)}), "
             "possible hallucination, using original text"
         )
         return primary_text
@@ -545,7 +565,7 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     # the LLM likely answered the question instead of editing it
     if '？' in primary_text and '？' not in output and '?' not in output:
         logging.warning(
-            "Gemini merge dropped question marks — likely answered instead of editing, "
+            "LLM dropped question marks — likely answered instead of editing, "
             "using original text"
         )
         return primary_text
