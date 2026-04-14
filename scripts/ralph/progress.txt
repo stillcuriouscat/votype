@@ -1,17 +1,25 @@
 # Ralph Progress Log
-Started: Mon 14 Apr 2026
+Started: Tue 14 Apr 2026 03:02:11 PM CST
 ---
 
-## Codebase Patterns (from previous round)
-- Pre-existing failures: `test_returns_true_with_mocked_cmdline`, 3 production DB pollution tests in `test_e2e_sqlite_state.py`
-- vertex_proxy.py runs on Oracle Cloud, invoked via SSH from post_processor_configs.py
-- vertex_proxy.py is self-contained (no voice_input imports), reads JSON from stdin, writes text to stdout
-- post_processor_configs.py has two callers: process_with_vertex_ai() for gemini-fix, process_with_gemini_merge() for gemini-merge
-- JSON stdin payload: {"system_prompt", "user_input", "model", "region"} — adding "max_output_tokens" field
-- _log() calls in voice_input.py use [:120] truncation — caused misdiagnosis of ASR truncation
+## Codebase Patterns
+- vertex_proxy.py is a self-contained script on Oracle Cloud — reads JSON from stdin, calls Gemini API, writes text to stdout
+- post_processor_configs.py sends JSON to vertex_proxy.py via SSH subprocess — any new stdin fields must be added to both sender (json.dumps) and receiver (data.get)
+- _run_vertex_proxy() 429 fallback replaces only "model" in the payload — all other fields (including max_output_tokens) are preserved automatically
+- _log() calls in voice_input.py write to notify log — [:120] truncation on line 1066 (PUNC) is intentionally kept, removed from ASR/PP logs
+- Pre-existing test failures: test_pw_record.py and test_trim_clipping.py need soundfile module; test_cli_state.py has a mock issue; test_ssh_claude.py/test_vertex_ai.py have OpenRouter fallback assertion mismatches; test_spec_faster_whisper.py and test_spec_gemini_merge.py have pre-existing failures
 
-## Investigation Evidence (from voice_input-a3i)
-- CSV proof: primary_asr=2250 chars, secondary_asr=2373 chars → ASR NOT truncated
-- CSV proof: polished output=1164 chars → Gemini output IS truncated (max_output_tokens=512)
-- 1164 chars ÷ ~2.5 chars/token ≈ 466 tokens, close to 512 limit
-- Log [:120] made ASR APPEAR truncated but it was complete
+---
+
+## 2026-04-14 - US-001, US-002, US-003
+- Implemented all 3 stories in a single commit (changes are tightly coupled)
+- **US-001**: vertex_proxy.py reads `max_output_tokens` from stdin JSON via `data.get("max_output_tokens", 512)`, passes to GenerateContentConfig. Help text updated.
+- **US-002**: post_processor_configs.py computes `min(8192, max(512, len(user_input)))` in both `process_with_vertex_ai()` and `process_with_gemini_merge()`, includes in stdin JSON.
+- **US-003**: Removed `[:120]` from 4 _log() call sites (PP input line 1054, PP output line 1128, ASR-2 secondary line 1219, ASR raw line 1225). PUNC log (line 1066) intentionally unchanged.
+- Files changed: vertex_proxy.py, post_processor_configs.py, voice_input.py
+- **Verification**: 795 tests pass, 63 failures all pre-existing (confirmed via git stash comparison)
+- **Learnings for future iterations:**
+  - The formula `min(8192, max(512, len(user_input)))` uses user_input (formatted string with template), not raw text
+  - vertex_proxy.py help text is a single multiline string in print_help() — add new fields after "region" line
+  - Tests for 429 fallback (test_429_fallback.py) verify _run_vertex_proxy behavior — 17/17 pass confirming max_output_tokens preserved through retry
+---
