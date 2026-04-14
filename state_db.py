@@ -25,6 +25,11 @@ _VALID_COLUMNS: frozenset[str] = frozenset({
 })
 
 # Matches SQL DEFAULT; if this PP fails to load, load_post_processor() falls back to regex-only
+# Deprecated post-processor IDs → replacement. get_state() auto-migrates these.
+_DEPRECATED_PP: dict[str, str] = {
+    "firered-punc": "gemini-merge",  # firered-punc is now auto-punctuation, not a post-processor
+}
+
 _SAFE_DEFAULT: dict[str, object] = {
     "id": 1,
     "status": "idle",
@@ -113,7 +118,22 @@ def get_state(db_path: Optional[Path] = None) -> dict[str, object]:
 
             if row is None:
                 return dict(_SAFE_DEFAULT)
-            return dict(row)
+            state = dict(row)
+
+            # Auto-migrate deprecated post-processor values
+            pp = state.get("post_processor")
+            if pp in _DEPRECATED_PP:
+                new_pp = _DEPRECATED_PP[pp]
+                state["post_processor"] = new_pp
+                try:
+                    conn.execute(
+                        "UPDATE daemon_state SET post_processor=? WHERE id=1",
+                        (new_pp,),
+                    )
+                    conn.commit()
+                except sqlite3.Error:
+                    pass  # Best-effort; next get_state() will retry
+            return state
         finally:
             conn.close()
 
