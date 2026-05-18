@@ -579,6 +579,252 @@ def process_with_gemini_merge(primary_text, secondary_text, config, glossary_ctx
     return output
 
 
+def process_with_anthropic(text, config, glossary_ctx=""):
+    """Call Anthropic Claude Haiku via SSH proxy on Oracle Cloud for text polishing.
+
+    System prompt and user text sent as JSON via stdin to anthropic_proxy.py.
+    Glossary context appended to system prompt at call time.
+    Falls back to OpenRouter on subprocess failure / timeout.
+
+    Args:
+        text: ASR transcription text to polish.
+        config: Preset config dict with ssh_host, proxy_script, model, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Polished text on success, original text on any failure. Never raises.
+    """
+    if not text:
+        return ""
+
+    min_text_len = config.get("min_text_len", 15)
+    if len(text) < min_text_len:
+        logging.info(f"Text length {len(text)} below min_text_len {min_text_len}, skipping SSH")
+        return text
+
+    # Load system + user prompt — must be wrapped in try/except to honor
+    # the "Never raises" contract (FUNCTION_SPEC Module B note on row 16).
+    try:
+        if "system_prompt_file" in config:
+            prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+            system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+            logging.info("[PROMPT] loaded system prompt: %s", prompt_path)
+        else:
+            system_prompt = config.get("system_prompt", "")
+
+        if "user_prompt_template_file" in config:
+            tpl_path = VOICE_INPUT_DATA_DIR / config["user_prompt_template_file"]
+            user_prompt_template = tpl_path.read_text(encoding="utf-8").strip()
+            logging.info("[PROMPT] loaded user template: %s", tpl_path)
+        else:
+            user_prompt_template = config.get("user_prompt_template")
+    except (OSError, UnicodeDecodeError) as e:
+        logging.warning(f"Failed to load prompt files: {e}")
+        return text
+
+    if glossary_ctx:
+        system_prompt = system_prompt + "\n\n" + glossary_ctx
+
+    user_input = user_prompt_template.format(text=text) if user_prompt_template else text
+
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        "python3", config["proxy_script"],
+    ]
+
+    max_tokens = min(8192, max(512, len(user_input)))
+
+    stdin_data = json.dumps({
+        "system_prompt": system_prompt,
+        "user_input": user_input,
+        "model": config.get("model", "claude-haiku-4-5-20251001"),
+        "max_tokens": max_tokens,
+    }, ensure_ascii=False)
+
+    timeout = config.get("timeout", 15)
+
+    output = None
+    try:
+        result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=None)
+        if result.returncode == 0:
+            output = result.stdout.strip()
+        else:
+            stderr = result.stderr.strip() if result.stderr else "unknown error"
+            logging.error(f"Anthropic failed (exit {result.returncode}): {stderr}")
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Anthropic timed out after {timeout}s")
+    except Exception as e:
+        logging.warning(f"Anthropic subprocess error: {e}")
+
+    # OpenRouter fallback when Anthropic failed
+    if not output:
+        try:
+            from openrouter_client import call_openrouter
+            or_result = call_openrouter(system_prompt, user_input, timeout=timeout)
+        except Exception as e:
+            logging.warning(f"OpenRouter error: {e}")
+            or_result = None
+
+        if or_result is not None:
+            output = or_result
+            logging.info("[OPENROUTER] fallback success for anthropic-fix: %d chars", len(output))
+        else:
+            try:
+                from voice_input import notify
+                notify("Votype", "Anthropic + OpenRouter both failed", urgency="low")
+            except Exception as e:
+                logging.warning(f"notify failed: {e}")
+            return text
+
+    # Hallucination guard
+    if len(output) > len(text) * 2:
+        logging.warning(
+            f"LLM output too long ({len(output)} vs input {len(text)}), "
+            "possible hallucination, using original text"
+        )
+        return text
+
+    # Question guard
+    if '？' in text and '？' not in output and '?' not in output:
+        logging.warning(
+            "LLM dropped question marks — likely answered instead of editing, "
+            "using original text"
+        )
+        return text
+
+    logging.info("[SSH] anthropic-fix success: %d→%d chars", len(text), len(output))
+    return output
+
+
+def process_with_anthropic_merge(primary_text, secondary_text, config, glossary_ctx=""):
+    """Merge two ASR transcriptions via Anthropic Claude Haiku.
+
+    Mirror of process_with_gemini_merge with Anthropic transport.
+    Falls back to OpenRouter on failure.
+
+    Args:
+        primary_text: Primary ASR (SenseVoice) transcription.
+        secondary_text: Secondary ASR (faster-whisper) transcription, or None.
+        config: Preset config dict with ssh_host, proxy_script, model, etc.
+        glossary_ctx: Glossary context string to append to system prompt.
+
+    Returns:
+        Merged/polished text on success, primary_text on any failure. Never raises.
+    """
+    # Empty primary: fall back to secondary if available
+    if not primary_text:
+        if secondary_text and len(secondary_text) >= 1:
+            logging.info(f"Primary empty, falling back to secondary ({len(secondary_text)} chars)")
+            return secondary_text
+        return ""
+
+    min_text_len = config.get("min_text_len", 15)
+    if len(primary_text) < min_text_len:
+        if secondary_text and len(secondary_text) > len(primary_text):
+            logging.info(
+                f"Primary too short ({len(primary_text)} chars), "
+                f"falling back to secondary ({len(secondary_text)} chars)"
+            )
+            return secondary_text
+        logging.info(f"Text length {len(primary_text)} below min_text_len {min_text_len}, skipping merge")
+        return primary_text
+
+    try:
+        if "system_prompt_file" in config:
+            prompt_path = VOICE_INPUT_DATA_DIR / config["system_prompt_file"]
+            system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+            logging.info("[PROMPT] loaded system prompt: %s", prompt_path)
+        else:
+            system_prompt = config.get("system_prompt", "")
+    except (OSError, UnicodeDecodeError) as e:
+        logging.warning(f"Failed to load prompt file: {e}")
+        return primary_text
+
+    if glossary_ctx:
+        system_prompt = system_prompt + "\n\n" + glossary_ctx
+
+    if secondary_text is not None:
+        user_input = f"Chinese ASR: {primary_text}\nEnglish ASR: {secondary_text}"
+        logging.info(f"[MERGE] primary={len(primary_text)} chars, secondary={len(secondary_text)} chars")
+    else:
+        user_input = f"Chinese ASR: {primary_text}"
+        logging.info(f"[MERGE] primary={len(primary_text)} chars, secondary=None")
+
+    cmd = [
+        "ssh", "-o", "ConnectTimeout=5",
+        config["ssh_host"],
+        "python3", config["proxy_script"],
+    ]
+
+    max_tokens = min(8192, max(512, len(user_input)))
+
+    stdin_data = json.dumps({
+        "system_prompt": system_prompt,
+        "user_input": user_input,
+        "model": config.get("model", "claude-haiku-4-5-20251001"),
+        "max_tokens": max_tokens,
+    }, ensure_ascii=False)
+
+    timeout = config.get("timeout", 15)
+
+    output = None
+    try:
+        result = _run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=None)
+        if result.returncode == 0:
+            output = result.stdout.strip()
+        else:
+            stderr = result.stderr.strip() if result.stderr else "unknown error"
+            logging.error(f"Anthropic merge failed (exit {result.returncode}): {stderr}")
+    except subprocess.TimeoutExpired:
+        logging.warning(f"Anthropic merge timed out after {timeout}s")
+    except Exception as e:
+        logging.warning(f"Anthropic merge subprocess error: {e}")
+
+    if not output:
+        try:
+            from openrouter_client import call_openrouter
+            or_result = call_openrouter(system_prompt, user_input, timeout=timeout)
+        except Exception as e:
+            logging.warning(f"OpenRouter error: {e}")
+            or_result = None
+
+        if or_result is not None:
+            output = or_result
+            logging.info("[OPENROUTER] fallback success for anthropic-merge: %d chars", len(output))
+        else:
+            try:
+                from voice_input import notify
+                notify("Votype", "Anthropic merge + OpenRouter both failed", urgency="low")
+            except Exception as e:
+                logging.warning(f"notify failed: {e}")
+            return primary_text
+
+    # Hallucination guard
+    if len(output) > len(primary_text) * 2:
+        logging.warning(
+            f"LLM output too long ({len(output)} vs input {len(primary_text)}), "
+            "possible hallucination, using original text"
+        )
+        return primary_text
+
+    # Question guard
+    if '？' in primary_text and '？' not in output and '?' not in output:
+        logging.warning(
+            "LLM dropped question marks — likely answered instead of editing, "
+            "using original text"
+        )
+        return primary_text
+
+    logging.info(
+        "[SSH] anthropic-merge success: primary=%d, secondary=%s → %d chars",
+        len(primary_text),
+        str(len(secondary_text)) if secondary_text else "None",
+        len(output),
+    )
+    return output
+
+
 def _tokenize_for_diff(text):
     """Tokenize text into individual Chinese characters and English words.
 
