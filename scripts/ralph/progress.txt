@@ -1,21 +1,60 @@
 # Ralph Progress Log
-Started: Sun 18 May 2026 (anthropic-fallback)
+Started: Mon 18 May 2026 12:03:05 PM +08
 ---
 
-## Codebase Patterns (carried over from previous rounds)
-- vertex_proxy.py is a self-contained script on Oracle Cloud — reads JSON from stdin, calls Gemini API, writes text to stdout
-- post_processor_configs.py sends JSON to vertex_proxy.py via SSH subprocess — any new stdin fields must be added to both sender (json.dumps) and receiver (data.get)
-- _run_vertex_proxy() 429 fallback replaces only "model" in the payload — all other fields preserved automatically
-- _log() calls in voice_input.py: ASR/PP logs no longer truncate ([:120] removed); PUNC log (line 1066) intentionally kept
-- Pre-existing test failures: test_pw_record.py / test_trim_clipping.py need soundfile module; test_cli_state.py mock issue; test_ssh_claude.py/test_vertex_ai.py OpenRouter assertion mismatches
-- DEFAULT_POST_PROCESSOR currently 'gemini-merge' (will change to 'claude-merge')
-- _DEPRECATED_PP mapping in state_db.py handles auto-migration on get_state()
-- Anthropic API key already deployed at oracle-cloud:~/.config/claude.secret (sk-ant-api03...)
+## Codebase Patterns
+- Tests for proxy scripts go in `tests/test_spec_<name>.py`; mock the SDK in `sys.modules` via `patch.dict` and import the proxy lazily inside the patched block.
+- `_run_vertex_proxy(cmd, stdin_data, timeout, fallback_model=None)` in `post_processor_configs.py` is proxy-script-agnostic — reuse for any new JSON-stdin SSH proxy.
+- Vocab loading flag set: `("ssh-claude", "vertex-ai", "vertex-ai-merge", ...)` — extend tuple when adding new SSH frameworks (and the same gate in `_post_process`).
+- Existing PP functions log success as `[SSH] <name> success: ...` and OpenRouter fallback as `[OPENROUTER] fallback success for <name>: <N> chars`.
+- `notify(...)` is lazy-imported inside the functions (`from voice_input import notify`) to avoid circular import.
 
-## This Round (Anthropic fallback)
-- Gemini Vertex AI became unreliable, switching primary to Anthropic Claude Haiku
-- Anthropic SDK call pattern: `client.messages.create(model=..., max_tokens=..., system=..., messages=[{role:'user', content:...}])`
-- Anthropic uses `max_tokens` (not `max_output_tokens` like Gemini SDK)
-- Reuse _run_vertex_proxy() — it's actually generic (proxy_script comes from config)
-- Reuse prompts (gemini-fix-system.txt, gemini-merge-system.txt — LLM-agnostic editing instructions)
-- DO NOT delete existing gemini-* / haiku-fix presets
+## [2026-05-18] - US-001
+- Created `anthropic_proxy.py` — self-contained Anthropic SDK proxy mirroring `vertex_proxy.py`.
+- Added `tests/test_spec_anthropic_proxy.py` (29 tests, all pass): `_trace`, `_import_anthropic`, `_read_api_key`, `print_help`, `run_test`, full `main()` table + AST invariant (no project imports).
+- **Learnings**:
+  - SDK is imported lazily inside `_import_anthropic()` so `--help` works without `anthropic` installed.
+  - Anthropic SDK uses key `max_tokens` (NOT `max_output_tokens` — that key is Gemini-specific).
+  - Anthropic response shape: `response.content[0].text` (list of blocks vs Gemini's flat `response.text`).
+  - Empty `response.content` list AND empty/None `content[0].text` both map to one error: `"Anthropic returned empty response"`.
+  - AST-level test for "no project imports" must walk imports (not grep source) because the docstring legitimately contains the word "voice_input".
+---
+
+## [2026-05-18] - US-002
+- Added `process_with_anthropic` and `process_with_anthropic_merge` to `post_processor_configs.py`.
+- Tests: `tests/test_spec_anthropic_process.py` (37 tests, all pass).
+- **Learnings**:
+  - JSON stdin uses `max_tokens` (Anthropic SDK key), not `max_output_tokens` (Gemini).
+  - `_run_vertex_proxy` is proxy-script-agnostic; reused as-is with `fallback_model=None` (Anthropic stderr never contains "429"/"RESOURCE_EXHAUSTED" so retry is a no-op).
+  - Hallucination guard requires output length to be ≤ 2× input length; when crafting tests for the question guard, keep output text short enough not to trip hallucination guard first.
+  - "Never raises" contract: wrap prompt-file loading in try/except → return input on failure.
+---
+
+## [2026-05-18] - US-003
+- Added `claude-fix` (framework=anthropic) and `claude-merge` (framework=anthropic-merge) presets; changed `DEFAULT_POST_PROCESSOR` from "gemini-merge" to "claude-merge".
+- Tests: `tests/test_spec_anthropic_presets.py` (16 tests, all pass).
+- **Learnings**:
+  - `claude-fix` reuses `prompts/gemini-fix-system.txt` (prompts are LLM-agnostic per FUNCTION_SPEC) and `prompts/haiku-fix-user.txt`.
+  - `claude-merge` has NO user template (merge format is built in code) and NO `fallback_model` key (Anthropic has no fallback-model concept).
+  - Eight existing presets are kept bit-for-bit identical.
+---
+
+## [2026-05-18] - US-004
+- Extended `voice_input.py`: `_post_process()` and `load_post_processor()` dispatch `anthropic` and `anthropic-merge` frameworks.
+- Added secondary-model idempotency: switching `gemini-merge` ↔ `claude-merge` no longer unload+reload the secondary ASR model.
+- Tests: `tests/test_spec_anthropic_dispatch.py` (15 tests, all pass).
+- **Learnings**:
+  - Construct `ASRDaemon` via `object.__new__()` + manual attr init in tests to avoid `__init__` side effects (DB read, GTK).
+  - When swapping merge frameworks, guard `_load_secondary_model()` with `if self._secondary_model is None` to avoid VRAM churn.
+---
+
+## [2026-05-18] - US-005
+- Added `gemini-merge`: `claude-merge` to `_DEPRECATED_PP`; updated `_SAFE_DEFAULT["post_processor"]` and `_CREATE_TABLE_SQL` DEFAULT to `"claude-merge"`; added INFO log `[STATE-DB] migrated post_processor: '<old>' → '<new>'` in `get_state`.
+- Tests: `tests/test_spec_anthropic_migration.py` (21 tests, all pass).
+- Updated test assertions across `test_pp_persistence_fix.py`, `test_post_processor_persistence.py`, `test_integration_state_db.py`, `test_state_db.py`, `test_unit_daemon_state.py`, `test_unit_state_db.py`, `test_contract_state_transitions.py`, `test_show_status.py` (sed s/gemini-merge/claude-merge/g) to reflect new default.
+- Updated `test_all_presets_persist_correctly` to skip presets in `_DEPRECATED_PP` (those intentionally don't round-trip).
+- **Learnings**:
+  - When changing a default constant referenced in many test files, prefer a single bulk sed pass over per-file edits.
+  - The migration log MUST be emitted BEFORE the UPDATE attempt so failures still produce an audit trail (FUNCTION_SPEC cross-cutting contract).
+  - Tests that round-trip ALL POST_PROCESSOR_PRESETS keys must check `_DEPRECATED_PP` and skip those — otherwise they break on every deprecation.
+---
