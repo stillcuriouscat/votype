@@ -1,25 +1,21 @@
 # Ralph Progress Log
-Started: Tue 14 Apr 2026 03:02:11 PM CST
+Started: Sun 18 May 2026 (anthropic-fallback)
 ---
 
-## Codebase Patterns
+## Codebase Patterns (carried over from previous rounds)
 - vertex_proxy.py is a self-contained script on Oracle Cloud — reads JSON from stdin, calls Gemini API, writes text to stdout
 - post_processor_configs.py sends JSON to vertex_proxy.py via SSH subprocess — any new stdin fields must be added to both sender (json.dumps) and receiver (data.get)
-- _run_vertex_proxy() 429 fallback replaces only "model" in the payload — all other fields (including max_output_tokens) are preserved automatically
-- _log() calls in voice_input.py write to notify log — [:120] truncation on line 1066 (PUNC) is intentionally kept, removed from ASR/PP logs
-- Pre-existing test failures: test_pw_record.py and test_trim_clipping.py need soundfile module; test_cli_state.py has a mock issue; test_ssh_claude.py/test_vertex_ai.py have OpenRouter fallback assertion mismatches; test_spec_faster_whisper.py and test_spec_gemini_merge.py have pre-existing failures
+- _run_vertex_proxy() 429 fallback replaces only "model" in the payload — all other fields preserved automatically
+- _log() calls in voice_input.py: ASR/PP logs no longer truncate ([:120] removed); PUNC log (line 1066) intentionally kept
+- Pre-existing test failures: test_pw_record.py / test_trim_clipping.py need soundfile module; test_cli_state.py mock issue; test_ssh_claude.py/test_vertex_ai.py OpenRouter assertion mismatches
+- DEFAULT_POST_PROCESSOR currently 'gemini-merge' (will change to 'claude-merge')
+- _DEPRECATED_PP mapping in state_db.py handles auto-migration on get_state()
+- Anthropic API key already deployed at oracle-cloud:~/.config/claude.secret (sk-ant-api03...)
 
----
-
-## 2026-04-14 - US-001, US-002, US-003
-- Implemented all 3 stories in a single commit (changes are tightly coupled)
-- **US-001**: vertex_proxy.py reads `max_output_tokens` from stdin JSON via `data.get("max_output_tokens", 512)`, passes to GenerateContentConfig. Help text updated.
-- **US-002**: post_processor_configs.py computes `min(8192, max(512, len(user_input)))` in both `process_with_vertex_ai()` and `process_with_gemini_merge()`, includes in stdin JSON.
-- **US-003**: Removed `[:120]` from 4 _log() call sites (PP input line 1054, PP output line 1128, ASR-2 secondary line 1219, ASR raw line 1225). PUNC log (line 1066) intentionally unchanged.
-- Files changed: vertex_proxy.py, post_processor_configs.py, voice_input.py
-- **Verification**: 795 tests pass, 63 failures all pre-existing (confirmed via git stash comparison)
-- **Learnings for future iterations:**
-  - The formula `min(8192, max(512, len(user_input)))` uses user_input (formatted string with template), not raw text
-  - vertex_proxy.py help text is a single multiline string in print_help() — add new fields after "region" line
-  - Tests for 429 fallback (test_429_fallback.py) verify _run_vertex_proxy behavior — 17/17 pass confirming max_output_tokens preserved through retry
----
+## This Round (Anthropic fallback)
+- Gemini Vertex AI became unreliable, switching primary to Anthropic Claude Haiku
+- Anthropic SDK call pattern: `client.messages.create(model=..., max_tokens=..., system=..., messages=[{role:'user', content:...}])`
+- Anthropic uses `max_tokens` (not `max_output_tokens` like Gemini SDK)
+- Reuse _run_vertex_proxy() — it's actually generic (proxy_script comes from config)
+- Reuse prompts (gemini-fix-system.txt, gemini-merge-system.txt — LLM-agnostic editing instructions)
+- DO NOT delete existing gemini-* / haiku-fix presets
