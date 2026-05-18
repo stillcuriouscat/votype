@@ -538,7 +538,7 @@ class TestShowStatusDbContract:
         import voice_input
 
         update_state(state_env["state_db_path"],
-                     post_processor="gemini-merge")
+                     post_processor="claude-merge")
 
         with patch("voice_input.send_to_daemon", return_value={"model": "test"}), \
              patch("voice_input.is_daemon_running", return_value=True):
@@ -795,7 +795,7 @@ class TestStateMachineIntegration:
         """Full recording cycle does not affect post_processor."""
         db = state_env["state_db_path"]
 
-        update_state(db, post_processor="gemini-merge")
+        update_state(db, post_processor="claude-merge")
 
         # Full cycle
         update_state(db, status="recording",
@@ -805,7 +805,7 @@ class TestStateMachineIntegration:
         update_state(db, status="idle")
 
         state = get_state(db)
-        assert state["post_processor"] == "gemini-merge"  # untouched
+        assert state["post_processor"] == "claude-merge"  # untouched
 
 
 # ============ IPC Removal Contract ============

@@ -79,19 +79,19 @@ class TestShowStatusDB:
         assert "gemini-fix" in captured.out
 
     def test_shows_default_post_processor(self, isolated_environment, capsys):
-        """show_status should show 'gemini-merge' post-processor for fresh DB."""
+        """show_status should show 'claude-merge' post-processor for fresh DB."""
         with patch("voice_input.is_daemon_running", return_value=False):
             voice_input.show_status()
 
         captured = capsys.readouterr()
         assert "Post-processor:" in captured.out
-        assert "gemini-merge" in captured.out
+        assert "claude-merge" in captured.out
 
     def test_no_ipc_for_post_processor(self, isolated_environment, capsys):
         """show_status should NOT call send_to_daemon for post-processor info."""
         _state_db.update_state(
             isolated_environment["state_db_path"],
-            post_processor="gemini-merge",
+            post_processor="claude-merge",
         )
 
         with patch("voice_input.is_daemon_running", return_value=True):
@@ -108,7 +108,7 @@ class TestShowStatusDB:
                     assert c[0][0] != "get_post_processor"
 
         captured = capsys.readouterr()
-        assert "gemini-merge" in captured.out
+        assert "claude-merge" in captured.out
 
     def test_daemon_not_responsive(self, isolated_environment, capsys):
         """show_status should handle unresponsive daemon gracefully."""

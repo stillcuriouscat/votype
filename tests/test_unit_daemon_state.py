@@ -87,7 +87,7 @@ class TestASRDaemonInit:
         # Patch POST_PROCESSOR_PRESETS to include test values
         monkeypatch.setattr(
             "voice_input.POST_PROCESSOR_PRESETS",
-            {"none": {}, "gemini-merge": {}, "gemini-fix": {}},
+            {"none": {}, "claude-merge": {}, "gemini-fix": {}},
         )
 
         daemon = voice_input.ASRDaemon.__new__(voice_input.ASRDaemon)
@@ -104,18 +104,18 @@ class TestASRDaemonInit:
     def test_reads_post_processor_from_db(
         self, daemon_state_env, monkeypatch
     ) -> None:
-        """BT#1: DB has 'gemini-merge' → daemon reads it."""
+        """BT#1: DB has 'claude-merge' → daemon reads it."""
         from state_db import update_state
 
         update_state(
             daemon_state_env["state_db_path"],
-            post_processor="gemini-merge",
+            post_processor="claude-merge",
         )
 
         from state_db import get_state
 
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_falls_back_on_invalid_preset(
         self, daemon_state_env, monkeypatch
@@ -235,7 +235,7 @@ class TestSyncStatusFromDb:
             lambda *a, **kw: {
                 "id": 1, "status": "idle", "daemon_pid": None,
                 "recording_pid": None, "recording_path": None,
-                "post_processor": "gemini-merge", "updated_at": None,
+                "post_processor": "claude-merge", "updated_at": None,
             },
         )
 
@@ -377,17 +377,17 @@ class TestLoadPostProcessor:
     def test_persists_preset_to_db(
         self, daemon_state_env, monkeypatch
     ) -> None:
-        """BT#1: Load gemini-merge → persists to DB."""
+        """BT#1: Load claude-merge → persists to DB."""
         from state_db import get_state, update_state
 
         # Simulate what load_post_processor does on success
         update_state(
             daemon_state_env["state_db_path"],
-            post_processor="gemini-merge",
+            post_processor="claude-merge",
         )
 
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_none_preset_persists_to_db(
         self, daemon_state_env, monkeypatch
@@ -426,14 +426,14 @@ class TestLoadPostProcessor:
         # Pre-set a valid post_processor
         update_state(
             daemon_state_env["state_db_path"],
-            post_processor="gemini-merge",
+            post_processor="claude-merge",
         )
 
         # On load failure, the spec says DB is NOT updated to "none"
         # (so next restart retries the user's chosen preset)
         # Verify DB still has original value
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
 
 # ===========================================================================
@@ -596,15 +596,15 @@ class TestPostProcessorDbPersistence:
     """Tests for post-processor persistence via SQLite DB."""
 
     def test_gemini_merge_roundtrip(self, daemon_state_env) -> None:
-        """update_state(post_processor='gemini-merge') then get_state()."""
+        """update_state(post_processor='claude-merge') then get_state()."""
         from state_db import get_state, update_state
 
         update_state(
             daemon_state_env["state_db_path"],
-            post_processor="gemini-merge",
+            post_processor="claude-merge",
         )
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_gemini_fix_roundtrip(self, daemon_state_env) -> None:
         """update_state(post_processor='gemini-fix') then get_state()."""
@@ -618,15 +618,15 @@ class TestPostProcessorDbPersistence:
         assert state["post_processor"] == "gemini-fix"
 
     def test_empty_db_returns_default_gemini_merge(self, daemon_state_env) -> None:
-        """Fresh DB → post_processor defaults to 'gemini-merge'."""
+        """Fresh DB → post_processor defaults to 'claude-merge'."""
         from state_db import get_state
 
         state = get_state(daemon_state_env["state_db_path"])
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     @pytest.mark.parametrize(
         "preset_id",
-        ["none", "gemini-fix", "gemini-merge", "haiku-fix"],
+        ["none", "gemini-fix", "claude-merge", "haiku-fix"],
     )
     def test_all_presets_persist_roundtrip(
         self, daemon_state_env, preset_id

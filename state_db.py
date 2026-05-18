@@ -27,7 +27,8 @@ _VALID_COLUMNS: frozenset[str] = frozenset({
 # Matches SQL DEFAULT; if this PP fails to load, load_post_processor() falls back to regex-only
 # Deprecated post-processor IDs → replacement. get_state() auto-migrates these.
 _DEPRECATED_PP: dict[str, str] = {
-    "firered-punc": "gemini-merge",  # firered-punc is now auto-punctuation, not a post-processor
+    "firered-punc": "claude-merge",  # firered-punc is now auto-punctuation, not a post-processor
+    "gemini-merge": "claude-merge",  # Gemini → Anthropic Claude Haiku as primary
 }
 
 _SAFE_DEFAULT: dict[str, object] = {
@@ -36,7 +37,7 @@ _SAFE_DEFAULT: dict[str, object] = {
     "daemon_pid": None,
     "recording_pid": None,
     "recording_path": None,
-    "post_processor": "gemini-merge",
+    "post_processor": "claude-merge",
     "updated_at": None,
 }
 
@@ -47,7 +48,7 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     daemon_pid INTEGER,
     recording_pid INTEGER,
     recording_path TEXT,
-    post_processor TEXT NOT NULL DEFAULT 'gemini-merge',
+    post_processor TEXT NOT NULL DEFAULT 'claude-merge',
     updated_at TEXT
 )"""
 
@@ -124,6 +125,7 @@ def get_state(db_path: Optional[Path] = None) -> dict[str, object]:
             pp = state.get("post_processor")
             if pp in _DEPRECATED_PP:
                 new_pp = _DEPRECATED_PP[pp]
+                logger.info("[STATE-DB] migrated post_processor: '%s' → '%s'", pp, new_pp)
                 state["post_processor"] = new_pp
                 try:
                     conn.execute(

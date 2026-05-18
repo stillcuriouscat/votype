@@ -9,8 +9,8 @@ No internal imports, no mocks, no patches. (AP-5 compliant)
 Driving ports:  voice-input status (CLI), sqlite3 (direct DB read)
 Driven ports:   SQLite DB file, CLI stdout
 
-Bug A: DEFAULT_POST_PROCESSOR should be "gemini-merge" (currently "none")
-Bug B: DB schema/safe defaults should be "gemini-merge" (currently "none")
+Bug A: DEFAULT_POST_PROCESSOR should be "claude-merge" (currently "none")
+Bug B: DB schema/safe defaults should be "claude-merge" (currently "none")
 Bug D: update_state failure should log at ERROR level (currently WARNING)
 Bug F: firered-punc compat should migrate to DEFAULT + write DB
 """
@@ -160,7 +160,7 @@ logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
 from state_db import update_state
 from pathlib import Path
 
-update_state(Path('{corrupt_db_path}'), post_processor="gemini-merge")
+update_state(Path('{corrupt_db_path}'), post_processor="claude-merge")
 print("done")
 """
     r = run_python(code)
@@ -170,27 +170,27 @@ print("done")
 # ── Bug A: DEFAULT_POST_PROCESSOR ───────────────────────────────────
 
 class TestBugA_DefaultPostProcessor:
-    """DEFAULT_POST_PROCESSOR must be 'gemini-merge', not 'none'."""
+    """DEFAULT_POST_PROCESSOR must be 'claude-merge', not 'none'."""
 
     def test_default_constant_is_gemini_merge(self):
-        """The DEFAULT_POST_PROCESSOR constant should be 'gemini-merge'.
+        """The DEFAULT_POST_PROCESSOR constant should be 'claude-merge'.
 
         Input:  read constant via subprocess
         Output: constant value
         """
         result = get_default_post_processor()
-        assert result == "gemini-merge", (
-            f"DEFAULT_POST_PROCESSOR is '{result}', expected 'gemini-merge'"
+        assert result == "claude-merge", (
+            f"DEFAULT_POST_PROCESSOR is '{result}', expected 'claude-merge'"
         )
 
 
 # ── Bug B: DB Defaults ──────────────────────────────────────────────
 
 class TestBugB_DBDefaults:
-    """DB schema and safe defaults must use 'gemini-merge'."""
+    """DB schema and safe defaults must use 'claude-merge'."""
 
     def test_fresh_db_default_is_gemini_merge(self, tmp_path):
-        """A fresh init_db row should have post_processor='gemini-merge'.
+        """A fresh init_db row should have post_processor='claude-merge'.
 
         Input:  init_db on empty dir
         Output: DB post_processor column value
@@ -198,34 +198,34 @@ class TestBugB_DBDefaults:
         db_path = tmp_path / "state.db"
         init_fresh_db(db_path)
         pp = read_db_pp(db_path)
-        assert pp == "gemini-merge", (
-            f"Fresh DB has post_processor='{pp}', expected 'gemini-merge'"
+        assert pp == "claude-merge", (
+            f"Fresh DB has post_processor='{pp}', expected 'claude-merge'"
         )
 
     def test_safe_default_is_gemini_merge(self):
-        """_SAFE_DEFAULT (returned on DB failure) should have 'gemini-merge'.
+        """_SAFE_DEFAULT (returned on DB failure) should have 'claude-merge'.
 
         Input:  read _SAFE_DEFAULT dict via subprocess
         Output: post_processor value
         """
         result = get_safe_default_pp()
-        assert result == "gemini-merge", (
-            f"_SAFE_DEFAULT has '{result}', expected 'gemini-merge'"
+        assert result == "claude-merge", (
+            f"_SAFE_DEFAULT has '{result}', expected 'claude-merge'"
         )
 
     def test_sql_schema_default_is_gemini_merge(self):
-        """The CREATE TABLE SQL DEFAULT should be 'gemini-merge'.
+        """The CREATE TABLE SQL DEFAULT should be 'claude-merge'.
 
         Input:  read _CREATE_TABLE_SQL via subprocess
         Output: extracted DEFAULT value
         """
         result = get_sql_schema_default()
-        assert result == "gemini-merge", (
-            f"SQL schema DEFAULT is '{result}', expected 'gemini-merge'"
+        assert result == "claude-merge", (
+            f"SQL schema DEFAULT is '{result}', expected 'claude-merge'"
         )
 
     def test_daemon_init_uses_gemini_merge_from_fresh_db(self, tmp_path):
-        """ASRDaemon.__init__ reading a fresh DB should get 'gemini-merge'.
+        """ASRDaemon.__init__ reading a fresh DB should get 'claude-merge'.
 
         Input:  fresh DB via init_db
         Output: simulated daemon __init__ PP selection
@@ -233,12 +233,12 @@ class TestBugB_DBDefaults:
         db_path = tmp_path / "state.db"
         init_fresh_db(db_path)
         pp = get_daemon_init_pp(db_path)
-        assert pp == "gemini-merge", (
-            f"Daemon init PP is '{pp}', expected 'gemini-merge'"
+        assert pp == "claude-merge", (
+            f"Daemon init PP is '{pp}', expected 'claude-merge'"
         )
 
     def test_get_state_on_corrupt_db_returns_gemini_merge(self, tmp_path):
-        """When DB is corrupt, get_state returns _SAFE_DEFAULT with 'gemini-merge'.
+        """When DB is corrupt, get_state returns _SAFE_DEFAULT with 'claude-merge'.
 
         Input:  corrupt DB file (random bytes)
         Output: get_state() return value
@@ -246,8 +246,8 @@ class TestBugB_DBDefaults:
         corrupt_path = tmp_path / "corrupt.db"
         corrupt_path.write_bytes(b"not a real database file")
         pp = get_state_on_corrupt_db(corrupt_path)
-        assert pp == "gemini-merge", (
-            f"Corrupt DB fallback has '{pp}', expected 'gemini-merge'"
+        assert pp == "claude-merge", (
+            f"Corrupt DB fallback has '{pp}', expected 'claude-merge'"
         )
 
 
@@ -272,13 +272,13 @@ class TestBugD_UpdateStateLogging:
     def test_update_state_failure_log_includes_kwargs(self, tmp_path):
         """update_state failure log should mention the lost kwargs.
 
-        Input:  corrupt DB + update_state(post_processor="gemini-merge")
+        Input:  corrupt DB + update_state(post_processor="claude-merge")
         Output: log message content
         """
         corrupt_path = tmp_path / "corrupt.db"
         corrupt_path.write_bytes(b"not a database")
         stdout, stderr = simulate_update_state_failure(corrupt_path)
-        assert "post_processor" in stderr or "gemini-merge" in stderr, (
+        assert "post_processor" in stderr or "claude-merge" in stderr, (
             f"Error log should mention lost data, got:\n{stderr}"
         )
 
@@ -327,7 +327,7 @@ print(current_pp)
         assert pp != "firered-punc", (
             "DB still has 'firered-punc' — migration did not write to DB"
         )
-        # After fix, DEFAULT_POST_PROCESSOR will be "gemini-merge"
+        # After fix, DEFAULT_POST_PROCESSOR will be "claude-merge"
         # For now, just verify it's not firered-punc
         default = get_default_post_processor()
         assert pp == default, (
@@ -342,7 +342,7 @@ print(current_pp)
 
         Note: 'firered-punc' is NOT in POST_PROCESSOR_PRESETS,
         so __init__ falls back to DEFAULT_POST_PROCESSOR.
-        After Bug A fix (DEFAULT=gemini-merge), this will be 'gemini-merge'.
+        After Bug A fix (DEFAULT=claude-merge), this will be 'claude-merge'.
         """
         db_path = tmp_path / "state.db"
         init_fresh_db(db_path)
@@ -350,8 +350,8 @@ print(current_pp)
         pp = get_daemon_init_pp(db_path)
         # firered-punc is not in presets → falls back to DEFAULT_POST_PROCESSOR
         default = get_default_post_processor()
-        assert pp == "gemini-merge", (
-            f"Daemon init with firered-punc DB got '{pp}', expected 'gemini-merge' "
+        assert pp == "claude-merge", (
+            f"Daemon init with firered-punc DB got '{pp}', expected 'claude-merge' "
             f"(DEFAULT is '{default}')"
         )
 
@@ -362,7 +362,7 @@ class TestIntegration_RestartCycle:
     """Verify PP survives simulated daemon restart with correct defaults."""
 
     def test_fresh_install_restart_preserves_gemini_merge(self, tmp_path):
-        """Fresh install → daemon init → 'restart' → still gemini-merge.
+        """Fresh install → daemon init → 'restart' → still claude-merge.
 
         Input:  fresh DB → two consecutive daemon __init__ simulations
         Output: PP value after second init
@@ -372,11 +372,11 @@ class TestIntegration_RestartCycle:
 
         # First boot
         pp1 = get_daemon_init_pp(db_path)
-        assert pp1 == "gemini-merge", f"First boot: '{pp1}'"
+        assert pp1 == "claude-merge", f"First boot: '{pp1}'"
 
         # Second boot (simulated restart)
         pp2 = get_daemon_init_pp(db_path)
-        assert pp2 == "gemini-merge", f"Restart: '{pp2}'"
+        assert pp2 == "claude-merge", f"Restart: '{pp2}'"
 
     def test_explicit_pp_survives_restart(self, tmp_path):
         """User sets gemini-fix → restart → still gemini-fix.
@@ -421,6 +421,6 @@ print(f"Post-processor: {{pp_name}} ({{pp_id}})")
         r = run_python(code)
         assert r.returncode == 0, f"Status sim failed: {r.stderr}"
         output = r.stdout.strip()
-        assert "gemini-merge" in output, (
-            f"Status output should show gemini-merge, got: {output}"
+        assert "claude-merge" in output, (
+            f"Status output should show claude-merge, got: {output}"
         )
