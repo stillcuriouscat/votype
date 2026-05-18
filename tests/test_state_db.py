@@ -72,7 +72,7 @@ class TestInitDB:
         assert row["daemon_pid"] is None
         assert row["recording_pid"] is None
         assert row["recording_path"] is None
-        assert row["post_processor"] == "gemini-merge"
+        assert row["post_processor"] == "claude-merge"
         assert row["updated_at"] is None
 
     def test_enables_wal_mode(self, initialized_db):
@@ -138,13 +138,13 @@ class TestLegacyMigration:
         """init_db migrates value from current_post_processor.txt to DB."""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         legacy_file = db_path.parent / "current_post_processor.txt"
-        legacy_file.write_text("gemini-merge")
+        legacy_file.write_text("claude-merge")
 
         state_db.init_db(db_path)
 
         # Value migrated to DB
         state = state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
         # Legacy file deleted
         assert not legacy_file.exists()
@@ -170,14 +170,14 @@ class TestLegacyMigration:
         state_db.init_db(db_path)
 
         state = state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"  # Default, not migrated
+        assert state["post_processor"] == "claude-merge"  # Default, not migrated
         assert not legacy_file.exists()
 
     def test_no_legacy_file_is_fine(self, db_path):
         """init_db works normally when no legacy file exists."""
         state_db.init_db(db_path)
         state = state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
 
 # ============ get_state Tests ============
@@ -193,7 +193,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         assert state["updated_at"] is None
 
     def test_returns_updated_values(self, initialized_db):
@@ -315,9 +315,9 @@ class TestUpdateState:
 
     def test_update_post_processor(self, initialized_db):
         """update_state can update post_processor column."""
-        state_db.update_state(initialized_db, post_processor="gemini-merge")
+        state_db.update_state(initialized_db, post_processor="claude-merge")
         state = state_db.get_state(initialized_db)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_other_columns_unchanged(self, initialized_db):
         """update_state doesn't affect columns not in kwargs."""

@@ -1,18 +1,22 @@
 {
   "project": "Votype",
-  "branchName": "ralph/gemini-output-truncation-fix",
-  "description": "Fix Gemini output truncation for long audio (voice_input-a3i). Root cause: vertex_proxy.py hardcodes max_output_tokens=512, truncating long transcriptions to ~1164 chars. CSV evidence: primary_asr=2250 chars, secondary_asr=2373 chars, but polished output only 1164 chars. Secondary issue: notify log [:120] truncation caused misdiagnosis of ASR truncation (ASR was actually complete).",
+  "branchName": "ralph/anthropic-fallback",
+  "description": "Add Anthropic Claude (Haiku) as primary post-processor via SSH→Oracle (voice_input-5ey). Gemini Vertex AI has become unreliable. Mirror the existing vertex_proxy.py + process_with_vertex_ai/process_with_gemini_merge pattern. Add claude-fix (single ASR) and claude-merge (dual ASR) presets. Keep existing gemini-* and haiku-fix presets intact. Auto-migrate users from gemini-merge → claude-merge in DB. OpenRouter remains the final fallback. Anthropic API key already deployed at oracle-cloud:~/.config/claude.secret.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "vertex_proxy.py: accept max_output_tokens from JSON stdin",
-      "description": "In vertex_proxy.py, read optional 'max_output_tokens' field from the stdin JSON payload. Use it in GenerateContentConfig instead of the hardcoded 512. Default to 512 when the field is absent (backward compatibility). Also update the --help text and the docstring to document the new field.",
+      "title": "Create anthropic_proxy.py on Oracle Cloud",
+      "description": "Create a self-contained anthropic_proxy.py script (parallel to vertex_proxy.py) that reads JSON from stdin, calls Anthropic API via the anthropic SDK, writes text to stdout. Place at /home/dev/code/voice_input/anthropic_proxy.py in this repo (will be deployed to Oracle via scp). Stdin JSON fields: system_prompt, user_input, model (default 'claude-haiku-4-5-20251001'), max_tokens (default 1024). Reads API key from ~/.config/claude.secret. Exit 0 on success (stdout=text), exit 1 on failure (stderr=error). Implements --help and --test flags like vertex_proxy.py. Uses anthropic SDK: client.messages.create(model=..., max_tokens=..., system=..., messages=[{role:'user', content:...}]).",
       "acceptanceCriteria": [
-        "vertex_proxy.py reads data.get('max_output_tokens', 512) from stdin JSON",
-        "GenerateContentConfig uses the dynamic value, not hardcoded 512",
-        "When JSON has no max_output_tokens field, behavior is identical to before (512)",
-        "When JSON has max_output_tokens=2048, GenerateContentConfig uses 2048",
-        "--help output mentions the max_output_tokens field",
+        "File /home/dev/code/voice_input/anthropic_proxy.py exists at repo root",
+        "Reads JSON from stdin with fields: system_prompt, user_input, model, max_tokens",
+        "Calls Anthropic API using anthropic SDK Messages API",
+        "Reads API key from ~/.config/claude.secret (Path expansion)",
+        "On API success: prints response.content[0].text.strip() to stdout, exits 0",
+        "On any error: prints error to stderr, exits 1",
+        "Supports --help flag with usage documentation",
+        "Supports --test flag that verifies SDK import + API key file readable",
+        "Self-contained: no imports from voice_input project (must run standalone on Oracle)",
         "Tests pass"
       ],
       "priority": 1,
@@ -20,15 +24,18 @@
     },
     {
       "id": "US-002",
-      "title": "post_processor_configs.py: dynamically compute and pass max_output_tokens",
-      "description": "In post_processor_configs.py, both process_with_vertex_ai() and process_with_gemini_merge() must compute max_output_tokens dynamically based on user_input length, and include it in the JSON payload sent to vertex_proxy.py. Formula: min(8192, max(512, len(user_input))). This ensures long transcriptions get enough output token budget while capping at 8192 to prevent runaway costs.",
+      "title": "Add process_with_anthropic() and process_with_anthropic_merge() to post_processor_configs.py",
+      "description": "Add two new functions to post_processor_configs.py that mirror process_with_vertex_ai() and process_with_gemini_merge() but call anthropic_proxy.py via SSH. Same SSH command shape as vertex: ssh oracle-cloud python3 ~/anthropic_proxy.py. Same JSON stdin payload format with max_tokens computed via min(8192, max(512, len(user_input))). Reuse _run_vertex_proxy() — it is already proxy-script-agnostic (takes cmd list); just pass a different cmd. Reuse OpenRouter fallback identical to existing vertex_ai functions. Hallucination guard (2x) and question guard same as existing.",
       "acceptanceCriteria": [
-        "process_with_vertex_ai() stdin_data JSON includes 'max_output_tokens' key",
-        "process_with_gemini_merge() stdin_data JSON includes 'max_output_tokens' key",
-        "Formula is min(8192, max(512, len(user_input)))",
-        "For the real incident case (user_input ~4637 chars), max_output_tokens=4637",
-        "For short text (user_input=50 chars), max_output_tokens=512 (floor)",
-        "For extremely long text (user_input=20000 chars), max_output_tokens=8192 (cap)",
+        "process_with_anthropic(text, config, glossary_ctx='') function added",
+        "process_with_anthropic_merge(primary_text, secondary_text, config, glossary_ctx='') function added",
+        "SSH cmd is: ['ssh', '-o', 'ConnectTimeout=5', config['ssh_host'], 'python3', config['proxy_script']]",
+        "JSON stdin includes system_prompt, user_input, model, max_tokens (NOT max_output_tokens — Anthropic SDK uses max_tokens)",
+        "max_tokens formula: min(8192, max(512, len(user_input)))",
+        "min_text_len guard works same as existing (short text returns primary)",
+        "OpenRouter fallback called on failure (returncode != 0 or timeout), with same notify text on both-failed",
+        "Hallucination guard (output > 2x input → return original) preserved",
+        "Question guard (input has ？ but output doesn't → return original) preserved",
         "Tests pass"
       ],
       "priority": 2,
@@ -36,17 +43,50 @@
     },
     {
       "id": "US-003",
-      "title": "voice_input.py: remove log [:120] truncation",
-      "description": "Remove the [:120] string slicing from 4 log lines in voice_input.py that truncate ASR and post-processor output in the notify log. This truncation caused the misdiagnosis in voice_input-a3i (ASR looked truncated in logs but was actually complete in CSV). Lines: (1) line 1054 PP input log, (2) line 1128 PP output log, (3) line 1219 ASR-2 secondary log, (4) line 1225 ASR raw log.",
+      "title": "Add claude-fix and claude-merge presets to post_processor_presets.py",
+      "description": "Add two new presets parallel to gemini-fix and gemini-merge. claude-fix uses framework 'anthropic'. claude-merge uses framework 'anthropic-merge'. Both point to ssh_host='oracle-cloud', proxy_script='~/anthropic_proxy.py', model='claude-haiku-4-5-20251001'. Reuse existing prompts: prompts/gemini-fix-system.txt for claude-fix, prompts/gemini-merge-system.txt for claude-merge (same task, different LLM — prompts are LLM-agnostic). Change DEFAULT_POST_PROCESSOR from 'gemini-merge' to 'claude-merge'. Do NOT delete or modify existing gemini-* or haiku-fix presets — they stay as alternatives.",
       "acceptanceCriteria": [
-        "voice_input.py line ~1054: _log('PP', f'input (...): {text}') without [:120]",
-        "voice_input.py line ~1128: _log('PP', f'output (...): {result}') without [:120]",
-        "voice_input.py line ~1219: _log('ASR-2', f'secondary: {self._last_secondary_text}') without [:120]",
-        "voice_input.py line ~1225: _log('ASR', f'raw: {raw_primary}') without [:120]",
-        "No remaining [:120] truncation in any _log() call for ASR or PP output",
+        "POST_PROCESSOR_PRESETS contains 'claude-fix' entry with framework='anthropic'",
+        "POST_PROCESSOR_PRESETS contains 'claude-merge' entry with framework='anthropic-merge'",
+        "Both presets set ssh_host='oracle-cloud', proxy_script='~/anthropic_proxy.py'",
+        "Both presets set model='claude-haiku-4-5-20251001', timeout=15, min_text_len=15, vocab_min_count=3",
+        "claude-fix uses system_prompt_file='prompts/gemini-fix-system.txt' and user_prompt_template_file='prompts/haiku-fix-user.txt'",
+        "claude-merge uses system_prompt_file='prompts/gemini-merge-system.txt' (no user template — merge format is built in code)",
+        "DEFAULT_POST_PROCESSOR == 'claude-merge'",
+        "All existing presets (none, chinese-text-correction, qwen3-0.6b, minicpm4-0.5b, haiku-fix, haiku-expand, gemini-fix, gemini-merge) remain unchanged",
         "Tests pass"
       ],
       "priority": 3,
+      "passes": true
+    },
+    {
+      "id": "US-004",
+      "title": "Dispatch anthropic/anthropic-merge frameworks in voice_input.py _post_process()",
+      "description": "Add framework dispatching for 'anthropic' (single ASR → process_with_anthropic) and 'anthropic-merge' (dual ASR → process_with_anthropic_merge) in ASRDaemon._post_process(). Mirror exactly how 'vertex-ai' and 'vertex-ai-merge' frameworks are dispatched — they should produce identical control flow. Anthropic does not need a secondary model load (faster-whisper) for the single fix variant; the merge variant needs secondary_text from self._last_secondary_text, same as vertex-ai-merge.",
+      "acceptanceCriteria": [
+        "_post_process() handles framework='anthropic' by calling process_with_anthropic(text, config, glossary_ctx)",
+        "_post_process() handles framework='anthropic-merge' by calling process_with_anthropic_merge(primary, secondary, config, glossary_ctx)",
+        "load_post_processor() handles 'anthropic-merge' framework by loading secondary model (faster-whisper), same as 'vertex-ai-merge'",
+        "load_post_processor() handles 'anthropic' framework without loading secondary, same as 'vertex-ai'",
+        "Switching between claude-merge and gemini-merge does not duplicate secondary model load",
+        "Tests pass"
+      ],
+      "priority": 4,
+      "passes": true
+    },
+    {
+      "id": "US-005",
+      "title": "DB migration: auto-migrate gemini-merge → claude-merge",
+      "description": "Add gemini-merge → claude-merge to the _DEPRECATED_PP migration mapping in state_db.py. When get_state() reads 'gemini-merge' from DB, it auto-writes back 'claude-merge' (since claude-merge is now the default). This makes the switch automatic for existing users without losing their preference for the merge workflow. Users who explicitly set gemini-fix or haiku-fix are NOT migrated (those are intentional choices, not the default).",
+      "acceptanceCriteria": [
+        "_DEPRECATED_PP dict in state_db.py contains 'gemini-merge': 'claude-merge'",
+        "get_state() detects 'gemini-merge' in DB and writes back 'claude-merge'",
+        "Migration logs a notice (informational, not error level)",
+        "gemini-fix is NOT in _DEPRECATED_PP (users who picked it explicitly stay on it)",
+        "haiku-fix is NOT in _DEPRECATED_PP",
+        "Tests pass"
+      ],
+      "priority": 5,
       "passes": true
     }
   ]

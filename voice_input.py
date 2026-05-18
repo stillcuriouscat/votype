@@ -1017,14 +1017,22 @@ class ASRDaemon:
             update_state(STATE_DB_PATH, post_processor=preset_id)
             self.post_processor_framework = preset["framework"]
             # Load vocab once for SSH-based frameworks (cached on instance)
-            if self.post_processor_framework in ("ssh-claude", "vertex-ai", "vertex-ai-merge"):
+            if self.post_processor_framework in (
+                "ssh-claude", "vertex-ai", "vertex-ai-merge",
+                "anthropic", "anthropic-merge",
+            ):
                 from post_processor_configs import load_vocab
                 self._vocab = load_vocab()
                 _log("PP-LOAD", f"vocab loaded: {len(self._vocab)} terms")
-            # Load/unload secondary ASR model based on post-processor
-            if self.post_processor_framework == "vertex-ai-merge":
-                self._load_secondary_model()
-                _log("PP-LOAD", "secondary ASR loaded for merge mode")
+            # Load/unload secondary ASR model based on post-processor.
+            # Idempotent: don't reload if already loaded when switching between
+            # merge frameworks (vertex-ai-merge ↔ anthropic-merge).
+            if self.post_processor_framework in ("vertex-ai-merge", "anthropic-merge"):
+                if getattr(self, "_secondary_model", None) is None:
+                    self._load_secondary_model()
+                    _log("PP-LOAD", "secondary ASR loaded for merge mode")
+                else:
+                    _log("PP-LOAD", "secondary ASR already loaded, reusing")
             else:
                 self._unload_secondary_model()
                 _log("PP-LOAD", f"secondary ASR unloaded (not needed for {preset_id})")
@@ -1068,11 +1076,15 @@ class ASRDaemon:
                 _log("PUNC", f"FAILED: {e}")
 
         # Step 3: SSH-based post-processing (glossary regex + LLM polish + vocab accumulation)
-        if result and self.post_processor_framework in ("ssh-claude", "vertex-ai", "vertex-ai-merge"):
+        if result and self.post_processor_framework in (
+            "ssh-claude", "vertex-ai", "vertex-ai-merge",
+            "anthropic", "anthropic-merge",
+        ):
             from post_processor_configs import (
                 apply_vocab, glossary_context, load_vocab,
                 process_with_ssh_claude,
                 process_with_vertex_ai, process_with_gemini_merge,
+                process_with_anthropic, process_with_anthropic_merge,
                 diff_to_vocab, save_vocab,
             )
 
@@ -1089,15 +1101,20 @@ class ASRDaemon:
             from state_db import update_state
             update_state(status="polishing")
 
-            if self.post_processor_framework == "vertex-ai-merge":
-                # Dual ASR fusion: primary processed text + raw secondary text → Gemini merge
+            if self.post_processor_framework in ("vertex-ai-merge", "anthropic-merge"):
+                # Dual ASR fusion: primary processed text + raw secondary text → LLM merge
                 secondary = getattr(self, '_last_secondary_text', None)
-                result = process_with_gemini_merge(result, secondary, config, glossary_ctx)
+                merge_fn = {
+                    "vertex-ai-merge": process_with_gemini_merge,
+                    "anthropic-merge": process_with_anthropic_merge,
+                }[self.post_processor_framework]
+                result = merge_fn(result, secondary, config, glossary_ctx)
             else:
-                # Single-ASR polish (ssh-claude or vertex-ai)
+                # Single-ASR polish (ssh-claude / vertex-ai / anthropic)
                 process_fn = {
                     "ssh-claude": process_with_ssh_claude,
                     "vertex-ai": process_with_vertex_ai,
+                    "anthropic": process_with_anthropic,
                 }[self.post_processor_framework]
                 result = process_fn(result, config, glossary_ctx)
 

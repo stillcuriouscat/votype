@@ -2,7 +2,7 @@
 Post-processor persistence tests (DB-based).
 
 Verifies that post-processor selection survives daemon restart via SQLite DB.
-Critical: gemini-merge must persist, not silently revert to gemini-fix.
+Critical: claude-merge must persist, not silently revert to gemini-fix.
 """
 
 import sys
@@ -21,13 +21,13 @@ class TestPostProcessorPersistenceDB:
     """Test that post-processor ID persists across daemon restarts via DB."""
 
     def test_gemini_merge_persists_after_restart(self, tmp_path):
-        """gemini-merge must restore after daemon restart, not fall back to gemini-fix."""
+        """claude-merge must restore after daemon restart, not fall back to gemini-fix."""
         db_path = tmp_path / "state.db"
         _state_db.init_db(db_path)
-        _state_db.update_state(db_path, post_processor="gemini-merge")
+        _state_db.update_state(db_path, post_processor="claude-merge")
 
         state = _state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_gemini_fix_persists(self, tmp_path):
         """gemini-fix should also persist correctly."""
@@ -39,19 +39,27 @@ class TestPostProcessorPersistenceDB:
         assert state["post_processor"] == "gemini-fix"
 
     def test_default_when_no_update(self, tmp_path):
-        """Fresh DB should return default 'gemini-merge' for post_processor."""
+        """Fresh DB should return default 'claude-merge' for post_processor."""
         db_path = tmp_path / "state.db"
         _state_db.init_db(db_path)
 
         state = _state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_all_presets_persist_correctly(self, tmp_path):
-        """Every valid preset should survive write→read roundtrip in DB."""
+        """Every non-deprecated preset should survive write→read roundtrip in DB.
+
+        Deprecated presets (per state_db._DEPRECATED_PP) are auto-migrated on read,
+        so they intentionally don't round-trip.
+        """
+        from state_db import _DEPRECATED_PP
+
         db_path = tmp_path / "state.db"
         _state_db.init_db(db_path)
 
         for preset_id in POST_PROCESSOR_PRESETS:
+            if preset_id in _DEPRECATED_PP:
+                continue
             _state_db.update_state(db_path, post_processor=preset_id)
             state = _state_db.get_state(db_path)
             assert state["post_processor"] == preset_id, (
@@ -64,10 +72,10 @@ class TestPostProcessorPersistenceDB:
         monkeypatch.setattr("voice_input.STATE_DB_PATH", db_path)
         monkeypatch.setattr("state_db.DEFAULT_DB_PATH", db_path)
         _state_db.init_db(db_path)
-        _state_db.update_state(db_path, post_processor="gemini-merge")
+        _state_db.update_state(db_path, post_processor="claude-merge")
 
         daemon = voice_input.ASRDaemon()
-        assert daemon.current_post_processor_id == "gemini-merge"
+        assert daemon.current_post_processor_id == "claude-merge"
 
     def test_daemon_init_falls_back_on_invalid(self, tmp_path, monkeypatch):
         """ASRDaemon.__init__ should fall back to default for invalid preset in DB."""
@@ -120,8 +128,8 @@ class TestPostProcessorLoadFailureFallback:
         monkeypatch.setattr("voice_input.STATE_DB_PATH", db_path)
         monkeypatch.setattr("state_db.DEFAULT_DB_PATH", db_path)
         _state_db.init_db(db_path)
-        _state_db.update_state(db_path, post_processor="gemini-merge")
+        _state_db.update_state(db_path, post_processor="claude-merge")
 
-        # After a failed load, reading the DB should still say gemini-merge
+        # After a failed load, reading the DB should still say claude-merge
         state = _state_db.get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"

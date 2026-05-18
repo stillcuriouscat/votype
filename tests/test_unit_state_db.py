@@ -59,7 +59,7 @@ class TestInitDb:
         assert row["daemon_pid"] is None
         assert row["recording_pid"] is None
         assert row["recording_path"] is None
-        assert row["post_processor"] == "gemini-merge"
+        assert row["post_processor"] == "claude-merge"
         assert row["updated_at"] is None
 
     def test_enables_wal_mode(self, tmp_path: Path) -> None:
@@ -72,17 +72,17 @@ class TestInitDb:
         assert _journal_mode(db_path) == "wal"
 
     def test_migrates_legacy_post_processor_file(self, tmp_path: Path) -> None:
-        """BT#2: Legacy file with 'gemini-merge' → migrated to DB."""
+        """BT#2: Legacy file with 'claude-merge' → migrated to DB."""
         from state_db import init_db
 
         legacy_file = tmp_path / "current_post_processor.txt"
-        legacy_file.write_text("gemini-merge")
+        legacy_file.write_text("claude-merge")
         db_path = tmp_path / "state.db"
 
         init_db(db_path)
 
         row = _read_row(db_path)
-        assert row["post_processor"] == "gemini-merge"
+        assert row["post_processor"] == "claude-merge"
         assert not legacy_file.exists()
 
     def test_migration_strips_whitespace(self, tmp_path: Path) -> None:
@@ -133,8 +133,8 @@ class TestInitDb:
         init_db(db_path)
 
         row = _read_row(db_path)
-        # Empty value is skipped; post_processor keeps the default "gemini-merge"
-        assert row["post_processor"] == "gemini-merge"
+        # Empty value is skipped; post_processor keeps the default "claude-merge"
+        assert row["post_processor"] == "claude-merge"
         assert not legacy_file.exists()
 
     def test_handles_readonly_filesystem_gracefully(
@@ -188,7 +188,7 @@ class TestInitDb:
         init_db(db_path)
 
         row = _read_row(db_path)
-        assert row["post_processor"] == "gemini-merge"
+        assert row["post_processor"] == "claude-merge"
 
 
 # ===========================================================================
@@ -211,7 +211,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         assert state["updated_at"] is None
 
     def test_returns_updated_values(self, tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ class TestGetState:
         # or fail gracefully)
         assert state["id"] == 1
         assert state["status"] == "idle"
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_thread_safe_concurrent_reads(self, tmp_path: Path) -> None:
         """BT#5: 10 concurrent threads reading → all get consistent dict."""
@@ -301,7 +301,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         assert state["updated_at"] is None
 
     def test_returns_safe_default_on_locked_db(
@@ -402,10 +402,10 @@ class TestUpdateState:
 
         db_path = tmp_path / "state.db"
         init_db(db_path)
-        update_state(db_path, post_processor="gemini-merge")
+        update_state(db_path, post_processor="claude-merge")
 
         state = get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_no_kwargs_is_noop(self, tmp_path: Path) -> None:
         """BT#5: No kwargs → no DB write, no updated_at change."""

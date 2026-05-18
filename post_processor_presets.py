@@ -115,7 +115,36 @@ POST_PROCESSOR_PRESETS = {
             "system_prompt_file": "prompts/gemini-merge-system.txt",
         },
     },
+    "claude-fix": {
+        "name": "Claude Fix (Anthropic)",
+        "description": "ASR error correction via Claude Haiku 4.5 (Anthropic) over SSH",
+        "framework": "anthropic",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/anthropic_proxy.py",
+            "model": "claude-haiku-4-5-20251001",
+            "timeout": 15,
+            "min_text_len": 15,
+            "vocab_min_count": 3,
+            "system_prompt_file": "prompts/gemini-fix-system.txt",
+            "user_prompt_template_file": "prompts/haiku-fix-user.txt",
+        },
+    },
+    "claude-merge": {
+        "name": "Claude Merge (Dual ASR)",
+        "description": "Merge SenseVoice + faster-whisper via Claude Haiku 4.5",
+        "framework": "anthropic-merge",
+        "config": {
+            "ssh_host": "oracle-cloud",
+            "proxy_script": "~/anthropic_proxy.py",
+            "model": "claude-haiku-4-5-20251001",
+            "timeout": 15,
+            "min_text_len": 15,
+            "vocab_min_count": 3,
+            "system_prompt_file": "prompts/gemini-merge-system.txt",
+        },
+    },
 }
 
-# Default post-processor (dual ASR fusion for best quality)
-DEFAULT_POST_PROCESSOR = "gemini-merge"
+# Default post-processor (Claude Haiku dual ASR fusion — primary path)
+DEFAULT_POST_PROCESSOR = "claude-merge"

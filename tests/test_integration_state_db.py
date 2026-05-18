@@ -115,18 +115,18 @@ class TestInitDb:
         """init_db() does not error when no legacy file exists."""
         init_db(db_path)
         state = get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_init_db_migration_strips_whitespace(self, db_path):
         """init_db() strips whitespace from legacy file value."""
         legacy_file = db_path.parent / "current_post_processor.txt"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_file.write_text("  gemini-merge \n")
+        legacy_file.write_text("  claude-merge \n")
 
         init_db(db_path)
 
         state = get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_init_db_never_raises_on_sqlite_error(self, tmp_path):
         """init_db() logs warnings but never raises on sqlite3.Error."""
@@ -162,7 +162,7 @@ class TestGetState:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         # updated_at is None for default row (only set by update_state)
 
     def test_get_state_self_initializes_if_table_missing(self, db_path):
@@ -186,7 +186,7 @@ class TestGetState:
             "daemon_pid": None,
             "recording_pid": None,
             "recording_path": None,
-            "post_processor": "gemini-merge",
+            "post_processor": "claude-merge",
             "updated_at": None,
         }
 
@@ -388,9 +388,9 @@ class TestDataModelContracts:
         assert state["status"] == "idle"
 
     def test_post_processor_default_is_gemini_merge_string(self, initialized_db):
-        """Default post_processor is 'gemini-merge' (string, not Python None)."""
+        """Default post_processor is 'claude-merge' (string, not Python None)."""
         state = get_state(initialized_db)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         assert isinstance(state["post_processor"], str)
 
     def test_updated_at_iso8601_utc_format(self, initialized_db):
@@ -481,7 +481,7 @@ class TestErrorTaxonomy:
         assert state["daemon_pid"] is None
         assert state["recording_pid"] is None
         assert state["recording_path"] is None
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
         assert state["updated_at"] is None
 
     def test_init_db_never_raises(self, tmp_path):
@@ -549,7 +549,7 @@ class TestRoundTrip:
         """All post-processor preset IDs persist and retrieve correctly."""
         init_db(db_path)
 
-        for preset_id in ["none", "gemini-fix", "haiku-fix", "gemini-merge"]:
+        for preset_id in ["none", "gemini-fix", "haiku-fix", "claude-merge"]:
             update_state(db_path, post_processor=preset_id)
             state = get_state(db_path)
             assert state["post_processor"] == preset_id
@@ -594,11 +594,11 @@ class TestRoundTrip:
         """Legacy file value survives: write file → init_db → get_state."""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         legacy_file = db_path.parent / "current_post_processor.txt"
-        legacy_file.write_text("gemini-merge\n")
+        legacy_file.write_text("claude-merge\n")
 
         init_db(db_path)
         state = get_state(db_path)
-        assert state["post_processor"] == "gemini-merge"
+        assert state["post_processor"] == "claude-merge"
 
     def test_updated_at_advances_on_each_update(self, initialized_db):
         """Each update_state() call advances updated_at."""
